@@ -1,0 +1,10 @@
+{
+  "name": "box3d-oracle",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "bun bin/check.ts",
+    "test": "bun test test/oracle.test.ts",
+    "upstream-test": "bun bin/oracle.ts upstream-test"
+  }
+}
