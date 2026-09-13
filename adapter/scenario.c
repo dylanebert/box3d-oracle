@@ -8,123 +8,80 @@
 #include <string.h>
 
 static float f32(uint32_t bits) { float value; memcpy(&value, &bits, sizeof(value)); return value; }
-static void hex32(FILE* out, uint32_t bits) { fprintf(out, "\"0x%08x\"", bits); }
-static void hex64(FILE* out, uint64_t bits) { fprintf(out, "\"0x%016llx\"", (unsigned long long)bits); }
 static uint32_t bits(float value) { uint32_t result; memcpy(&result, &value, sizeof(result)); return result; }
+static void hex32(FILE* out, uint32_t value) { fprintf(out, "\"0x%08x\"", value); }
+static void hex64(FILE* out, uint64_t value) { fprintf(out, "\"0x%016llx\"", (unsigned long long)value); }
 static void vec3(FILE* out, b3Vec3 value) { fputc('[', out); hex32(out, bits(value.x)); fputc(',', out); hex32(out, bits(value.y)); fputc(',', out); hex32(out, bits(value.z)); fputc(']', out); }
 static void pos(FILE* out, b3Pos value) { fputc('[', out); hex32(out, bits((float)value.x)); fputc(',', out); hex32(out, bits((float)value.y)); fputc(',', out); hex32(out, bits((float)value.z)); fputc(']', out); }
-static void command_id(FILE* out, const char* id) { fprintf(out, "\"%s\"", id); }
 static void copy_file(FILE* out, FILE* input) { int c; rewind(input); while ((c = fgetc(input)) != EOF) fputc(c, out); }
+static b3Vec3 v3(const ScenarioCommand* c, int offset) { return (b3Vec3){ f32(c->values[offset]), f32(c->values[offset + 1]), f32(c->values[offset + 2]) }; }
+static b3Quat q4(const ScenarioCommand* c, int offset) { return (b3Quat){ .v = v3(c, offset), .s = f32(c->values[offset + 3]) }; }
+static b3Transform xf(const ScenarioCommand* c, int offset) { return (b3Transform){ .p = v3(c, offset), .q = q4(c, offset + 3) }; }
+#define HAS(c, n) (((c)->flags & (UINT64_C(1) << (n))) != 0)
+#define JV(c, n) f32((c)->values[14 + (n)])
+#define JBOOL(c, n) HAS((c), (n))
+#define ENABLE(c, n) HAS((c), (48 + (n)))
+#define E_SPRING 0
+#define E_LIMIT 1
+#define E_MOTOR 2
+#define E_CONE 3
+#define E_TWIST 4
+#define E_SUSPENSION_SPRING 5
+#define E_SUSPENSION_LIMIT 6
+#define E_SPIN 7
+#define E_STEERING 8
+#define E_STEERING_LIMIT 9
+
+static void set_base(b3JointDef* base, const ScenarioCommand* c, b3BodyId* bodies)
+{
+    base->bodyIdA = bodies[c->a]; base->bodyIdB = bodies[c->b];
+    base->localFrameA = xf(c, 0); base->localFrameB = xf(c, 7);
+}
+
+static int create_joint(const ScenarioCommand* c, b3WorldId world, b3BodyId* bodies)
+{
+    if (c->a < 0 || c->a >= 128 || c->b < 0 || c->b >= 128 || !b3Body_IsValid(bodies[c->a]) || !b3Body_IsValid(bodies[c->b])) return 0;
+    switch (c->op) {
+    case SCENARIO_REVOLUTE: {
+        b3RevoluteJointDef d = b3DefaultRevoluteJointDef(); set_base(&d.base, c, bodies);
+        if (JBOOL(c, 0)) d.targetAngle = JV(c, 0); if (JBOOL(c, 1)) d.hertz = JV(c, 1); if (JBOOL(c, 2)) d.dampingRatio = JV(c, 2);
+        if (JBOOL(c, 3)) d.lowerAngle = JV(c, 3); if (JBOOL(c, 4)) d.upperAngle = JV(c, 4); if (JBOOL(c, 5)) d.maxMotorTorque = JV(c, 5); if (JBOOL(c, 6)) d.motorSpeed = JV(c, 6);
+        d.enableSpring = ENABLE(c, E_SPRING); d.enableLimit = ENABLE(c, E_LIMIT); d.enableMotor = ENABLE(c, E_MOTOR);
+        (void)b3CreateRevoluteJoint(world, &d); return 1;
+    }
+    case SCENARIO_WELD: { b3WeldJointDef d = b3DefaultWeldJointDef(); set_base(&d.base, c, bodies); if (JBOOL(c, 10)) d.linearHertz = JV(c, 10); if (JBOOL(c, 11)) d.linearDampingRatio = JV(c, 11); if (JBOOL(c, 13)) d.angularHertz = JV(c, 13); if (JBOOL(c, 14)) d.angularDampingRatio = JV(c, 14); (void)b3CreateWeldJoint(world, &d); return 1; }
+    case SCENARIO_PARALLEL: { b3ParallelJointDef d = b3DefaultParallelJointDef(); set_base(&d.base, c, bodies); if (JBOOL(c, 1)) d.hertz = JV(c, 1); if (JBOOL(c, 2)) d.dampingRatio = JV(c, 2); if (JBOOL(c, 7)) d.maxTorque = JV(c, 7); (void)b3CreateParallelJoint(world, &d); return 1; }
+    case SCENARIO_MOTOR: { b3MotorJointDef d = b3DefaultMotorJointDef(); set_base(&d.base, c, bodies); if (JBOOL(c, 38)) d.linearVelocity = v3(c, 56); if (JBOOL(c, 8)) d.maxVelocityForce = JV(c, 8); if (JBOOL(c, 39)) d.angularVelocity = v3(c, 59); if (JBOOL(c, 9)) d.maxVelocityTorque = JV(c, 9); if (JBOOL(c, 10)) d.linearHertz = JV(c, 10); if (JBOOL(c, 11)) d.linearDampingRatio = JV(c, 11); if (JBOOL(c, 12)) d.maxSpringForce = JV(c, 12); if (JBOOL(c, 13)) d.angularHertz = JV(c, 13); if (JBOOL(c, 14)) d.angularDampingRatio = JV(c, 14); if (JBOOL(c, 15)) d.maxSpringTorque = JV(c, 15); (void)b3CreateMotorJoint(world, &d); return 1; }
+    case SCENARIO_DISTANCE: { b3DistanceJointDef d = b3DefaultDistanceJointDef(); set_base(&d.base, c, bodies); if (JBOOL(c, 16)) d.length = JV(c, 16); if (JBOOL(c, 1)) d.hertz = JV(c, 1); if (JBOOL(c, 2)) d.dampingRatio = JV(c, 2); if (JBOOL(c, 17)) d.minLength = JV(c, 17); if (JBOOL(c, 18)) d.maxLength = JV(c, 18); if (JBOOL(c, 19)) d.maxMotorForce = JV(c, 19); if (JBOOL(c, 6)) d.motorSpeed = JV(c, 6); d.enableSpring = ENABLE(c, E_SPRING); d.enableLimit = ENABLE(c, E_LIMIT); d.enableMotor = ENABLE(c, E_MOTOR); (void)b3CreateDistanceJoint(world, &d); return 1; }
+    case SCENARIO_PRISMATIC: { b3PrismaticJointDef d = b3DefaultPrismaticJointDef(); set_base(&d.base, c, bodies); if (JBOOL(c, 1)) d.hertz = JV(c, 1); if (JBOOL(c, 2)) d.dampingRatio = JV(c, 2); if (JBOOL(c, 20)) d.targetTranslation = JV(c, 20); if (JBOOL(c, 21)) d.lowerTranslation = JV(c, 21); if (JBOOL(c, 22)) d.upperTranslation = JV(c, 22); if (JBOOL(c, 19)) d.maxMotorForce = JV(c, 19); if (JBOOL(c, 6)) d.motorSpeed = JV(c, 6); d.enableSpring = ENABLE(c, E_SPRING); d.enableLimit = ENABLE(c, E_LIMIT); d.enableMotor = ENABLE(c, E_MOTOR); (void)b3CreatePrismaticJoint(world, &d); return 1; }
+    case SCENARIO_SPHERICAL: { b3SphericalJointDef d = b3DefaultSphericalJointDef(); set_base(&d.base, c, bodies); if (JBOOL(c, 1)) d.hertz = JV(c, 1); if (JBOOL(c, 2)) d.dampingRatio = JV(c, 2); if (JBOOL(c, 23)) d.coneAngle = JV(c, 23); if (JBOOL(c, 24)) d.lowerTwistAngle = JV(c, 24); if (JBOOL(c, 25)) d.upperTwistAngle = JV(c, 25); if (JBOOL(c, 5)) d.maxMotorTorque = JV(c, 5); if (JBOOL(c, 40)) d.motorVelocity = v3(c, 62); d.enableSpring = ENABLE(c, E_SPRING); d.enableConeLimit = ENABLE(c, E_CONE); d.enableTwistLimit = ENABLE(c, E_TWIST); d.enableMotor = ENABLE(c, E_MOTOR); (void)b3CreateSphericalJoint(world, &d); return 1; }
+    case SCENARIO_WHEEL: { b3WheelJointDef d = b3DefaultWheelJointDef(); set_base(&d.base, c, bodies); if (JBOOL(c, 32)) d.suspensionHertz = JV(c, 32); if (JBOOL(c, 33)) d.suspensionDampingRatio = JV(c, 33); if (JBOOL(c, 34)) d.lowerSuspensionLimit = JV(c, 34); if (JBOOL(c, 35)) d.upperSuspensionLimit = JV(c, 35); if (JBOOL(c, 30)) d.maxSpinTorque = JV(c, 30); if (JBOOL(c, 31)) d.spinSpeed = JV(c, 31); if (JBOOL(c, 36)) d.steeringHertz = JV(c, 36); if (JBOOL(c, 37)) d.steeringDampingRatio = JV(c, 37); if (JBOOL(c, 27)) d.targetSteeringAngle = JV(c, 27); if (JBOOL(c, 26)) d.maxSteeringTorque = JV(c, 26); if (JBOOL(c, 28)) d.lowerSteeringLimit = JV(c, 28); if (JBOOL(c, 29)) d.upperSteeringLimit = JV(c, 29); d.enableSuspensionSpring = ENABLE(c, E_SUSPENSION_SPRING) ? true : d.enableSuspensionSpring; d.enableSuspensionLimit = ENABLE(c, E_SUSPENSION_LIMIT); d.enableSpinMotor = ENABLE(c, E_SPIN); d.enableSteering = ENABLE(c, E_STEERING); d.enableSteeringLimit = ENABLE(c, E_STEERING_LIMIT); (void)b3CreateWheelJoint(world, &d); return 1; }
+    default: return 0;
+    }
+}
 
 static int run_scenario(int index, FILE* out)
 {
-    if (index < 0 || index >= scenario_record_count) { fprintf(stderr, "scenario index out of range: %d\n", index); return 2; }
-    const ScenarioRecord* record = scenario_records + index;
-    b3WorldId world = b3_nullWorldId;
-    b3BodyId bodies[64] = { 0 };
-    b3BoxHull boxes[64];
-    b3Sphere spheres[64];
-    int boxCount = 0, sphereCount = 0;
-    int consumed = 0;
-    int observed = 0;
-    int hashes = 0;
-    FILE* observationOutput = tmpfile();
-    FILE* hashOutput = tmpfile();
-    if (observationOutput == NULL || hashOutput == NULL) { fprintf(stderr, "temporary scenario output failed\n"); return 2; }
-
+    if (index < 0 || index >= scenario_record_count) return 2;
+    const ScenarioRecord* record = scenario_records + index; b3WorldId world = b3_nullWorldId; b3BodyId bodies[128] = { 0 }; b3BoxHull boxes[128]; b3Sphere spheres[128]; b3Capsule capsules[128]; int jointCount = 0; int observations = 0; FILE* observationOutput = tmpfile(); FILE* hashOutput = tmpfile();
+    if (!observationOutput || !hashOutput) return 2;
     for (int i = 0; i < record->commandCount; ++i) {
-        const ScenarioCommand* command = record->commands + i;
-        consumed += 1;
-        switch (command->op) {
-        case SCENARIO_WORLD: {
-            b3WorldDef def = b3DefaultWorldDef();
-            def.gravity = (b3Vec3){ f32(command->values[0]), f32(command->values[1]), f32(command->values[2]) };
-            def.enableSleep = command->flag0 != 0;
-            def.enableContinuous = command->flag1 != 0;
-            def.workerCount = 1;
-            world = b3CreateWorld(&def);
-            break;
-        }
-        case SCENARIO_BODY: {
-            if (B3_IS_NULL(world)) { fprintf(stderr, "body before world in %s\n", record->id); return 2; }
-            b3BodyDef def = b3DefaultBodyDef();
-            def.type = (b3BodyType)command->kind;
-            def.position = (b3Pos){ f32(command->values[0]), f32(command->values[1]), f32(command->values[2]) };
-            def.linearVelocity = (b3Vec3){ f32(command->values[3]), f32(command->values[4]), f32(command->values[5]) };
-            def.angularVelocity = (b3Vec3){ f32(command->values[6]), f32(command->values[7]), f32(command->values[8]) };
-            if (command->values[9] != 0) def.angularDamping = f32(command->values[9]);
-            if (command->a < 0 || command->a >= 64) { fprintf(stderr, "invalid body id in %s\n", record->id); return 2; }
-            bodies[command->a] = b3CreateBody(world, &def);
-            break;
-        }
-        case SCENARIO_BOX_RESOURCE:
-            if (command->a < 0 || command->a >= 64) return 2;
-            boxes[command->a] = b3MakeBoxHull(f32(command->values[0]), f32(command->values[1]), f32(command->values[2]));
-            if (command->a >= boxCount) boxCount = command->a + 1;
-            break;
-        case SCENARIO_SPHERE_RESOURCE:
-            if (command->a < 0 || command->a >= 64) return 2;
-            spheres[command->a] = (b3Sphere){ { 0.0f, 0.0f, 0.0f }, f32(command->values[0]) };
-            if (command->a >= sphereCount) sphereCount = command->a + 1;
-            break;
-        case SCENARIO_SHAPE: {
-            if (command->a < 0 || command->a >= 64 || command->b < 0 || command->b >= 64 || !b3Body_IsValid(bodies[command->b])) { fprintf(stderr, "invalid shape reference in %s\n", record->id); return 2; }
-            b3ShapeDef def = b3DefaultShapeDef();
-            int resource = (int)command->values[0];
-            if (command->kind == 1) b3CreateHullShape(bodies[command->b], &def, &boxes[resource].base);
-            else if (command->kind == 2) b3CreateSphereShape(bodies[command->b], &def, &spheres[resource]);
-            else { fprintf(stderr, "unknown shape kind in %s\n", record->id); return 2; }
-            break;
-        }
-        case SCENARIO_STEP:
-            if (B3_IS_NULL(world)) return 2;
-            b3World_Step(world, f32(command->values[0]), command->a);
-            break;
-        case SCENARIO_OBSERVE: {
-            if (observed > 0) fputc(',', observationOutput);
-            fprintf(observationOutput, "{\"step\":%d,\"bodies\":[", command->step);
-            for (int j = 0; j < command->bodyCount; ++j) {
-                if (j) fputc(',', observationOutput);
-                int body = command->bodies[j];
-                if (body < 0 || body >= 64 || !b3Body_IsValid(bodies[body])) { fprintf(stderr, "unknown observed body in %s\n", record->id); return 2; }
-                b3WorldTransform transform = b3Body_GetTransform(bodies[body]);
-                b3Vec3 linear = b3Body_GetLinearVelocity(bodies[body]);
-                b3Vec3 angular = b3Body_GetAngularVelocity(bodies[body]);
-                fprintf(observationOutput, "{\"id\":\"b%d\",\"p\":", body); pos(observationOutput, transform.p); fputs(",\"q\":[", observationOutput); hex32(observationOutput, bits(transform.q.v.x)); fputc(',', observationOutput); hex32(observationOutput, bits(transform.q.v.y)); fputc(',', observationOutput); hex32(observationOutput, bits(transform.q.v.z)); fputc(',', observationOutput); hex32(observationOutput, bits(transform.q.s)); fputs("],\"v\":", observationOutput); vec3(observationOutput, linear); fputs(",\"w\":", observationOutput); vec3(observationOutput, angular); fputc('}', observationOutput);
-            }
-            fputs("],\"receiptId\":", observationOutput); command_id(observationOutput, command->id); fputc('}', observationOutput); observed += 1;
-            break;
-        }
-        case SCENARIO_HASH:
-            if (B3_IS_NULL(world)) return 2;
-            if (observed == 0) { fprintf(stderr, "hash before observation in %s\n", record->id); return 2; }
-            if (hashes > 0) fputc(',', hashOutput);
-            fprintf(hashOutput, "{\"step\":%d,\"value\":", command->step); hex64(hashOutput, b3OracleCallHashWorldStateId(world));
-            fputs(",\"receiptId\":", hashOutput); command_id(hashOutput, command->id); fputc('}', hashOutput); hashes += 1;
-            break;
-        default:
-            fprintf(stderr, "unknown command opcode %d in %s\n", command->op, record->id); return 2;
+        const ScenarioCommand* c = record->commands + i;
+        switch (c->op) {
+        case SCENARIO_WORLD: { b3WorldDef d = b3DefaultWorldDef(); d.gravity = v3(c, 0); d.enableSleep = (c->flags & (UINT64_C(1) << 62)) != 0; d.enableContinuous = (c->flags & (UINT64_C(1) << 63)) != 0; d.workerCount = 1; world = b3CreateWorld(&d); break; }
+        case SCENARIO_BODY: { if (!B3_IS_NON_NULL(world) || c->a < 0 || c->a >= 128) return 2; b3BodyDef d = b3DefaultBodyDef(); d.type = (b3BodyType)c->kind; d.position = (b3Pos){ f32(c->values[0]), f32(c->values[1]), f32(c->values[2]) }; d.rotation = q4(c, 3); d.linearVelocity = v3(c, 7); d.angularVelocity = v3(c, 10); d.linearDamping = f32(c->values[13]); d.angularDamping = f32(c->values[14]); bodies[c->a] = b3CreateBody(world, &d); break; }
+        case SCENARIO_BOX_RESOURCE: boxes[c->a] = b3MakeBoxHull(f32(c->values[0]), f32(c->values[1]), f32(c->values[2])); break;
+        case SCENARIO_SPHERE_RESOURCE: spheres[c->a] = (b3Sphere){ { 0, 0, 0 }, f32(c->values[0]) }; break;
+        case SCENARIO_CAPSULE_RESOURCE: capsules[c->a] = (b3Capsule){ v3(c, 0), v3(c, 3), f32(c->values[6]) }; break;
+        case SCENARIO_SHAPE: { if (!b3Body_IsValid(bodies[c->b])) return 2; b3ShapeDef d = b3DefaultShapeDef(); d.baseMaterial.rollingResistance = f32(c->values[1]); d.filter.groupIndex = (int)c->values[2]; if (c->kind == 1) b3CreateHullShape(bodies[c->b], &d, &boxes[(int)c->values[0]].base); else if (c->kind == 2) b3CreateSphereShape(bodies[c->b], &d, &spheres[(int)c->values[0]]); else if (c->kind == 3) b3CreateCapsuleShape(bodies[c->b], &d, &capsules[(int)c->values[0]]); else return 2; break; }
+        case SCENARIO_REVOLUTE: case SCENARIO_WELD: case SCENARIO_PARALLEL: case SCENARIO_MOTOR: case SCENARIO_DISTANCE: case SCENARIO_PRISMATIC: case SCENARIO_SPHERICAL: case SCENARIO_WHEEL: if (!B3_IS_NON_NULL(world) || !create_joint(c, world, bodies)) return 2; jointCount++; break;
+        case SCENARIO_STEP: if (!B3_IS_NON_NULL(world)) return 2; b3World_Step(world, f32(c->values[0]), c->substeps); break;
+        case SCENARIO_OBSERVE: { if (!B3_IS_NON_NULL(world)) return 2; if (observations) fputc(',', observationOutput); fprintf(observationOutput, "{\"step\":%d,\"bodies\":[", c->step); for (int j = 0; j < c->bodyCount; ++j) { if (j) fputc(',', observationOutput); if (c->bodies[j] < 0 || c->bodies[j] >= 128 || !b3Body_IsValid(bodies[c->bodies[j]])) return 2; b3WorldTransform t = b3Body_GetTransform(bodies[c->bodies[j]]); fprintf(observationOutput, "{\"id\":\"b%d\",\"p\":", c->bodies[j]); pos(observationOutput, t.p); fputs(",\"q\":[", observationOutput); hex32(observationOutput, bits(t.q.v.x)); fputc(',', observationOutput); hex32(observationOutput, bits(t.q.v.y)); fputc(',', observationOutput); hex32(observationOutput, bits(t.q.v.z)); fputc(',', observationOutput); hex32(observationOutput, bits(t.q.s)); fputs("],\"v\":", observationOutput); vec3(observationOutput, b3Body_GetLinearVelocity(bodies[c->bodies[j]])); fputs(",\"w\":", observationOutput); vec3(observationOutput, b3Body_GetAngularVelocity(bodies[c->bodies[j]])); fputc('}', observationOutput); } fputs("],\"receiptId\":\"", observationOutput); fputs(c->id, observationOutput); fputs("\"}", observationOutput); observations++; break; }
+        case SCENARIO_HASH: { if (!B3_IS_NON_NULL(world) || observations == 0) return 2; if (observations > 1) fputc(',', hashOutput); fprintf(hashOutput, "{\"step\":%d,\"value\":", c->step); hex64(hashOutput, b3OracleCallHashWorldStateId(world)); fprintf(hashOutput, ",\"receiptId\":\"%s\"}", c->id); break; }
+        default: return 2;
         }
     }
-    if (B3_IS_NON_NULL(world)) b3DestroyWorld(world);
-    fputs("{\"schema\":\"box3d-oracle/scenario-output/v1\",\"id\":", out); command_id(out, record->id);
-    fputs(",\"name\":", out); command_id(out, record->name);
-    fprintf(out, ",\"corpusDigest\":\"%s\",\"observations\":[", SCENARIO_CORPUS_DIGEST); copy_file(out, observationOutput);
-    fputs("],\"hashes\":[", out); copy_file(out, hashOutput);
-    fputs("],\"receipt\":{\"corpusDigest\":\"" SCENARIO_CORPUS_DIGEST "\",\"consumedCommands\":[", out);
-    for (int i = 0; i < record->commandCount; ++i) { if (i) fputc(',', out); command_id(out, record->commands[i].id); }
-    fputs("],\"observationIds\":[", out);
-    int wroteObservationId = 0;
-    for (int i = 0; i < record->commandCount; ++i) if (record->commands[i].op == SCENARIO_OBSERVE) { if (wroteObservationId++) fputc(',', out); command_id(out, record->commands[i].id); }
-    fputs("]}}\n", out);
-    (void)consumed; (void)hashes; (void)boxCount; (void)sphereCount;
-    return 0;
+    if (jointCount != record->requiredJointCount) return 2;
+    fputs("{\"schema\":\"box3d-oracle/scenario-output/v1\",\"id\":\"", out); fputs(record->id, out); fputs("\",\"name\":\"", out); fputs(record->name, out); fprintf(out, "\",\"corpusDigest\":\"%s\",\"observations\":[", SCENARIO_CORPUS_DIGEST); copy_file(out, observationOutput); fprintf(out, "],\"hashes\":["); copy_file(out, hashOutput); fprintf(out, "],\"receipt\":{\"corpusDigest\":\"%s\",\"consumedCommands\":[", SCENARIO_CORPUS_DIGEST); for (int i = 0; i < record->commandCount; ++i) { if (i) fputc(',', out); fprintf(out, "\"%s\"", record->commands[i].id); } fputs("],\"observationIds\":[", out); int first = 1; for (int i = 0; i < record->commandCount; ++i) if (record->commands[i].op == SCENARIO_OBSERVE) { if (!first) fputc(',', out); first = 0; fprintf(out, "\"%s\"", record->commands[i].id); } fputs("]}}\n", out); if (B3_IS_NON_NULL(world)) b3DestroyWorld(world); return 0;
 }
-
-int main(int argc, char** argv)
-{
-    if (argc != 3 || strcmp(argv[1], "--index") != 0) { fprintf(stderr, "usage: scenario-adapter --index <integer> <output.json>\n"); return 2; }
-    char* end = NULL; long index = strtol(argv[2], &end, 10);
-    if (end == argv[2] || *end != '\0') { fprintf(stderr, "scenario index must be an integer\n"); return 2; }
-    return run_scenario((int)index, stdout);
-}
+int main(int argc, char** argv) { if (argc != 3 || strcmp(argv[1], "--index") != 0) return 2; char* end = NULL; long index = strtol(argv[2], &end, 10); if (end == argv[2] || *end) return 2; return run_scenario((int)index, stdout); }

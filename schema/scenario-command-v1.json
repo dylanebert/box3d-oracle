@@ -16,7 +16,20 @@
           "id": { "pattern": "^s1\\.[a-z0-9-]+\\.v1$" },
           "name": { "type": "string" },
           "stepCount": { "type": "integer", "minimum": 1 },
-          "commands": { "type": "array", "minItems": 1 }
+          "commands": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["op", "id"],
+              "properties": {
+                "op": { "enum": ["world.create", "body.create", "resource.box", "resource.sphere", "resource.capsule", "shape.create", "joint.revolute", "joint.weld", "joint.parallel", "joint.motor", "joint.distance", "joint.prismatic", "joint.spherical", "joint.wheel", "step", "observe", "hash"] },
+                "id": { "type": "string" }
+              },
+              "additionalProperties": true
+            }
+          },
+          "requiredJointIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
         },
         "additionalProperties": true
       }
