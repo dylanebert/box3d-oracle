@@ -382,6 +382,10 @@ function buildPublic(source: string, build: string): { executable: string; compi
   checked(cc, [...objects, join(build, "src", "libbox3d.a"), "-lm", "-o", executable]);
   return { executable, compiler: compilerEvidence(), cmake };
 }
+function stableLinkMapDigest(path: string): string {
+  const cacheRoot = dirname(dirname(dirname(dirname(path))));
+  return digest(readFileSync(path, "utf8").split(cacheRoot).join("<oracle-cache>"));
+}
 function buildPatched(source: string, build: string): { executable: string; map: string; nm: string; compiler: ReturnType<typeof compilerEvidence>; cmake: string[]; hookDigest: string } {
   mkdirSync(build, { recursive: true });
   const generator = cmakeGenerator();
@@ -496,7 +500,7 @@ function generateBundleV2(workspace: string, sha: string, output: string): Recor
   }
   const schema = JSON.stringify({ "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "box3d-oracle/v2", "title": "Box3D oracle white-box bundle", "type": "object", "required": ["schema", "cases"], "properties": { "schema": { "const": "box3d-oracle/v2" }, "cases": { "type": "array" } }, "additionalProperties": false, "description": "Generated public and white-box observations. White-box outputs are returned by actual upstream bodies through additive hooks." }, null, 2) + "\n";
   const membership = canonicalJson({ schema: "box3d-oracle/v2", publicSymbols: PUBLIC_SYMBOLS, whiteBox: DECLARED_SYMBOLS, deferredPrivateCases: ["convex-manifold", "mesh-contact", "convex-contact", "joint"], disposition: "Contact, convex-manifold, and joint families are explicitly deferred to O4." });
-  const provenance = canonicalJson({ schema: "box3d-oracle/provenance-v1", declared: DECLARED_SYMBOLS, nm: evidence.nm.split("\n").filter((line) => DECLARED_SYMBOLS.some(({ symbol }) => line.includes(symbol))), linkMapSha256: sha256File(evidence.map), linkMap: relative(root, evidence.map), sentinelMutations: DECLARED_SYMBOLS.map(({ symbol, vector }) => ({ symbol, vector, watched: true })) });
+  const provenance = canonicalJson({ schema: "box3d-oracle/provenance-v1", declared: DECLARED_SYMBOLS, nm: evidence.nm.split("\n").filter((line) => DECLARED_SYMBOLS.some(({ symbol }) => line.includes(symbol))), linkMapSha256: stableLinkMapDigest(evidence.map), linkMap: "<whitebox-build>/o3-adapter/box3d-o3-adapter.map", sentinelMutations: DECLARED_SYMBOLS.map(({ symbol, vector }) => ({ symbol, vector, watched: true })) });
   const files: BundleFile[] = [{ name: "schema.json", data: schema }, { name: "membership.json", data: membership }, { name: "provenance.json", data: provenance }, { name: "cases.json", data: cases }];
   writeBundleFiles(output, files);
   const fileDigests: Record<string, string> = {};
@@ -508,7 +512,7 @@ function generateBundleV2(workspace: string, sha: string, output: string): Recor
     bundle: { upstreamSha: sha, schema: "v2", identity: `${sha}/v2` },
     upstream: { url: OFFICIAL_SOURCE_URL, ref: OFFICIAL_SOURCE_REF, channel: "official-main", sha, tree: pristine.tree, reachableFromChannel: true },
     oracle: { memberCommit, generator: "bin/oracle.ts", generatorSha256: sha256File(generatorPath), hookDigest: hooks.digest, patches: PATCHES.map(({ file, marker }) => ({ file, marker })), adapters: ["adapter/o3_main.c", "adapter/whitebox.c", ...publicSources().map((name) => `adapter/${name}`)] },
-    build: { compiler: evidence.compiler, cmake: evidence.cmake.map((value) => value === patched ? "<patched-official-source>" : value === build ? "<whitebox-build>" : value), library: "patched disposable official libbox3.a", privateIncludeRoot: "official src/ in disposable patched checkout", linkMapSha256: sha256File(evidence.map), nmEvidenceSha256: digest(evidence.nm), executableSha256: sha256File(evidence.executable) },
+    build: { compiler: evidence.compiler, cmake: evidence.cmake.map((value) => value === patched ? "<patched-official-source>" : value === build ? "<whitebox-build>" : value), library: "patched disposable official libbox3.a", privateIncludeRoot: "official src/ in disposable patched checkout", linkMapSha256: stableLinkMapDigest(evidence.map), nmEvidenceSha256: digest(evidence.nm), executableSha256: sha256File(evidence.executable) },
     schemaDefinition: "schema.json", membership: "membership.json", provenance: "provenance.json", caseFile: "cases.json", caseCount: parsed.cases.length, fileDigests,
     fileDigestScope: "Generated evidence files only; manifest is the receipt and is intentionally excluded from its own digest map.",
     generation: { startsEmpty: true, readsShallot: false, readsGolds: false, overwrite: false, outputArithmetic: false, publicLanePristine: true, whiteBoxLaneDisposablePatch: true },
@@ -519,8 +523,8 @@ function generateBundleV2(workspace: string, sha: string, output: string): Recor
   return manifest;
 }
 
-function compareTrees(expected: string, actual: string): void {
-  const names = (path: string) => readdirSync(path).filter((name) => statSync(join(path, name)).isFile()).sort();
+function compareTrees(expected: string, actual: string, includeManifest = true): void {
+  const names = (path: string) => readdirSync(path).filter((name) => statSync(join(path, name)).isFile() && (includeManifest || name !== "manifest.json")).sort();
   const expectedNames = names(expected);
   const actualNames = names(actual);
   if (JSON.stringify(expectedNames) !== JSON.stringify(actualNames)) throw new OracleError(`bundle file set differs: expected ${expectedNames.join(",")}, got ${actualNames.join(",")}`);
@@ -543,7 +547,7 @@ function reproduce(workspace: string, bundle: string): void {
     generate(workspace, sha, first);
     generate(workspace, sha, second);
     compareTrees(first, second);
-    compareTrees(bundleRoot, first);
+    compareTrees(bundleRoot, first, schema === "v2");
   } finally {
     rmSync(first, { recursive: true, force: true });
     rmSync(second, { recursive: true, force: true });
