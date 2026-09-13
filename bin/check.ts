@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DECLARED_SYMBOLS, O4_DECLARED_SYMBOLS, PATCHES } from "../hooks/patches";
 
-const required = ["README.md", "package.json", "bin/oracle.ts", "bin/check.ts", "test/oracle.test.ts", "include/box3d_oracle_adapter.h", "adapter/main.c", "adapter/math.c", "adapter/geometry.c", "adapter/distance.c", "adapter/tree.c", "adapter/manifold.c", "adapter/query.c", "adapter/mover.c", "adapter/writer.c", "adapter/o3_main.c", "adapter/o4_main.c", "adapter/o4.c", "adapter/whitebox.c", "hooks/patches.ts", "hooks/oracle_hooks.h", "schema/v1.json"];
+const required = ["README.md", "package.json", "bin/oracle.ts", "bin/check.ts", "test/oracle.test.ts", "scenarios/v1.json", "adapter/scenario.c", "adapter/scenario_main.c", "adapter/scenario_commands.h", "include/box3d_oracle_adapter.h", "adapter/main.c", "adapter/math.c", "adapter/geometry.c", "adapter/distance.c", "adapter/tree.c", "adapter/manifold.c", "adapter/query.c", "adapter/mover.c", "adapter/writer.c", "adapter/o3_main.c", "adapter/o4_main.c", "adapter/o4.c", "adapter/whitebox.c", "hooks/patches.ts", "hooks/oracle_hooks.h", "schema/v1.json"];
 for (const path of required) {
   if (!existsSync(join(import.meta.dir, "..", path))) throw new Error(`missing required path: ${path}`);
 }
@@ -27,5 +27,6 @@ if (PATCHES.length < 20 || PATCHES.some((patch) => !patch.marker.startsWith("rec
 if (DECLARED_SYMBOLS.length !== 5 || DECLARED_SYMBOLS.some((declared) => !declared.vector.endsWith(".v2"))) throw new Error("O3 declared provenance is incomplete");
 if (O4_DECLARED_SYMBOLS.length !== 12 || O4_DECLARED_SYMBOLS.some((declared) => !declared.vector.startsWith("o4."))) throw new Error("O4 declared provenance is incomplete");
 if (!oracle.includes("generateBundleV3") || !oracle.includes("sentinelTestV3") || !oracle.includes("fakeJointJson")) throw new Error("O4 configuration and sentinel lanes are incomplete");
+if (!oracle.includes("generateBundleV4") || !oracle.includes("SCENARIO_NAMES") || !oracle.includes("readsShallot: false") || !oracle.includes("readsGolds: false")) throw new Error("O5 scenario corpus and anti-gold lanes are incomplete");
 if (!oracle.includes("rejectCopiedBody") || !oracle.includes("verifyPatchSet") || !oracle.includes("B3_ORACLE_SENTINELS")) throw new Error("O3 verifier lanes are incomplete");
 console.log("box3d-oracle check: PASS");

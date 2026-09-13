@@ -92,6 +92,26 @@ test("declared provenance rejects a missing or wrong symbol", () => {
   }
 });
 
+test("scenario membership is an exact 53-name join with owned setup and observation schedules", () => {
+  const corpus = JSON.parse(readFileSync(join(import.meta.dir, "..", "scenarios", "v1.json"), "utf8")) as { scenarios: Array<{ id: string; name: string; setup?: unknown; actions?: unknown; observations?: unknown; whiteBoxObservations?: unknown }> };
+  expect(corpus.scenarios).toHaveLength(53);
+  expect(new Set(corpus.scenarios.map((item) => item.id)).size).toBe(53);
+  expect(new Set(corpus.scenarios.map((item) => item.name)).size).toBe(53);
+  for (const item of corpus.scenarios) {
+    expect(item.setup).toBeDefined();
+    expect(item.actions).toBeDefined();
+    expect(item.observations).toBeDefined();
+    expect(item.whiteBoxObservations).toBeDefined();
+  }
+});
+
+test("scenario mutation is named at the shared gravity input and is not an expected-value edit", () => {
+  const source = readFileSync(join(import.meta.dir, "..", "scenarios", "v1.json"), "utf8");
+  expect(source).toContain('"gravity"');
+  expect(source).toContain('"whiteBoxObservations"');
+  expect(source).not.toContain('"expected"');
+});
+
 test("upstream test evidence preserves a failed executable premise", () => {
   const root = mkdtempSync(join(tmpdir(), "box3d-oracle-test-"));
   try {
