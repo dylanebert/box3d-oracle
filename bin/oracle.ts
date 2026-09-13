@@ -58,7 +58,7 @@ export function verifyTreeMatches(repo: string, expectedSha: string): void {
 }
 
 export function verifyClean(repo: string): void {
-  const status = checked("git", ["status", "--porcelain=v1", "--untracked-files=all"], repo).stdout;
+  const status = checked("git", ["status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"], repo).stdout;
   if (status !== "") throw new OracleError(`source checkout is dirty:\n${status}`);
 }
 
@@ -161,7 +161,7 @@ function buildAndTest(source: string, build: string): {
   const buildCommand = ["--build", build, "--target", "test"];
   const built = checked("cmake", buildCommand);
   const executable = executablePath(build);
-  const result = runUpstreamTest(executable, source);
+  const result = runUpstreamTest(executable, build);
   const test = {
     command: [relative(build, executable)],
     executable: relative(build, executable),
