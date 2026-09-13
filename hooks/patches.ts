@@ -10,7 +10,7 @@ export const PATCHES: OraclePatch[] = [
     file: "src/recording.c",
     marker: "recording.hash-world-state",
     anchor: '#include "recording.h"\n',
-    addition: '#include "recording.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\n#endif\n',
+    addition: '#include "recording.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\nuint32_t b3OracleO4ConvexManifoldVisits = 0;\nuint32_t b3OracleO4MeshContactVisits = 0;\nuint32_t b3OracleO4ConvexContactVisits = 0;\nuint32_t b3OracleO4JointVisits = 0;\n#endif\n',
   },
   {
     file: "src/recording.c",
@@ -72,7 +72,76 @@ export const PATCHES: OraclePatch[] = [
     anchor: "static void b3AddNonTouchingContact( b3World* world, b3Contact* contact )\n",
     addition: "#ifdef B3_ORACLE_HOOKS\nvoid b3OracleResetRecycleVisits( void )\n{\n\tb3OracleRecycleVisits = 0;\n}\n#endif\n\nstatic void b3AddNonTouchingContact( b3World* world, b3Contact* contact )\n",
   },
+  {
+    file: "src/convex_manifold.c",
+    marker: "o4.convex-manifold.hooks",
+    anchor: '#include "algorithm.h"\n',
+    addition: '#include "algorithm.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\n#endif\n',
+  },
+  {
+    file: "src/convex_manifold.c",
+    marker: "o4.convex-manifold.visit.simd",
+    anchor: "#if B3_SIMD_COLLIDE_HULLS == 1\n\nvoid b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* hullA, const b3HullData* hullB,\n\t\t\t\t\t b3Transform transformBtoA, b3SATCache* cache )\n{\n\tmanifold->pointCount = 0;\n",
+    addition: "#if B3_SIMD_COLLIDE_HULLS == 1\n\nvoid b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* hullA, const b3HullData* hullB,\n\t\t\t\t\t b3Transform transformBtoA, b3SATCache* cache )\n{\n#ifdef B3_ORACLE_SENTINELS\n\t++b3OracleO4ConvexManifoldVisits;\n#endif\n\tmanifold->pointCount = 0;\n",
+  },
+  {
+    file: "src/convex_manifold.c",
+    marker: "o4.convex-manifold.visit.scalar",
+    anchor: "\treturn (b3EdgeQuery){\n\t\t.normal = maxNormal,\n\t\t.separation = maxSeparation,\n\t\t.indexA = maxIndexA,\n\t\t.indexB = maxIndexB,\n\t};\n}\n\nvoid b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* hullA, const b3HullData* hullB,\n\t\t\t\t\t b3Transform transformBtoA, b3SATCache* cache )\n{\n\tmanifold->pointCount = 0;\n",
+    addition: "\treturn (b3EdgeQuery){\n\t\t.normal = maxNormal,\n\t\t.separation = maxSeparation,\n\t\t.indexA = maxIndexA,\n\t\t.indexB = maxIndexB,\n\t};\n}\n\nvoid b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* hullA, const b3HullData* hullB,\n\t\t\t\t\t b3Transform transformBtoA, b3SATCache* cache )\n{\n#ifdef B3_ORACLE_SENTINELS\n\t++b3OracleO4ConvexManifoldVisits;\n#endif\n\tmanifold->pointCount = 0;\n",
+  },
+  {
+    file: "src/mesh_contact.c",
+    marker: "o4.mesh-contact.hooks",
+    anchor: '#include "contact.h"\n',
+    addition: '#include "contact.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\n#endif\n',
+  },
+  {
+    file: "src/mesh_contact.c",
+    marker: "o4.mesh-contact.visit",
+    anchor: "b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB, bool isFast, b3Arena arena )\n{\n\tB3_ASSERT( shapeA->type == b3_meshShape || shapeA->type == b3_heightShape );\n",
+    addition: "b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB, bool isFast, b3Arena arena )\n{\n#ifdef B3_ORACLE_SENTINELS\n\t++b3OracleO4MeshContactVisits;\n#endif\n\tB3_ASSERT( shapeA->type == b3_meshShape || shapeA->type == b3_heightShape );\n",
+  },
+  {
+    file: "src/contact.c",
+    marker: "o4.convex-contact.hooks",
+    anchor: '#include "contact.h"\n',
+    addition: '#include "contact.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\n#endif\n',
+  },
+  {
+    file: "src/contact.c",
+    marker: "o4.convex-contact.visit",
+    anchor: "{\n\t// Compute new manifold\n\tbool touching = b3ComputeConvexManifold",
+    addition: "{\n#ifdef B3_ORACLE_SENTINELS\n\t++b3OracleO4ConvexContactVisits;\n#endif\n\t// Compute new manifold\n\tbool touching = b3ComputeConvexManifold",
+  },
+  {
+    file: "src/joint.c",
+    marker: "o4.joint.hooks",
+    anchor: '#include "joint.h"\n',
+    addition: '#include "joint.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\n#endif\n',
+  },
+  ...["Parallel", "Distance", "Motor", "Filter", "Prismatic", "Revolute", "Spherical", "Weld", "Wheel"].map((name) => ({
+    file: "src/joint.c",
+    marker: `o4.joint.${name.toLowerCase()}.visit`,
+    anchor: `b3JointId b3Create${name}Joint( b3WorldId worldId, const b3${name}JointDef* def )\n{\n`,
+    addition: `b3JointId b3Create${name}Joint( b3WorldId worldId, const b3${name}JointDef* def )\n{\n#ifdef B3_ORACLE_SENTINELS\n\t++b3OracleO4JointVisits;\n#endif\n`,
+  })) as OraclePatch[],
 ];
+
+export const O4_DECLARED_SYMBOLS = [
+  { symbol: "b3CollideHulls", file: "src/convex_manifold.c", family: "convex-manifold", vector: "o4.convex-manifold" },
+  { symbol: "b3ComputeMeshManifolds", file: "src/mesh_contact.c", family: "mesh-contact", vector: "o4.mesh-contact" },
+  { symbol: "b3UpdateConvexContact", file: "src/contact.c", family: "convex-contact", vector: "o4.convex-contact" },
+  { symbol: "b3CreateParallelJoint", file: "src/joint.c", family: "joint", vector: "o4.joint.parallel" },
+  { symbol: "b3CreateDistanceJoint", file: "src/joint.c", family: "joint", vector: "o4.joint.distance" },
+  { symbol: "b3CreateMotorJoint", file: "src/joint.c", family: "joint", vector: "o4.joint.motor" },
+  { symbol: "b3CreateFilterJoint", file: "src/joint.c", family: "joint", vector: "o4.joint.filter" },
+  { symbol: "b3CreatePrismaticJoint", file: "src/joint.c", family: "joint", vector: "o4.joint.prismatic" },
+  { symbol: "b3CreateRevoluteJoint", file: "src/joint.c", family: "joint", vector: "o4.joint.revolute" },
+  { symbol: "b3CreateSphericalJoint", file: "src/joint.c", family: "joint", vector: "o4.joint.spherical" },
+  { symbol: "b3CreateWeldJoint", file: "src/joint.c", family: "joint", vector: "o4.joint.weld" },
+  { symbol: "b3CreateWheelJoint", file: "src/joint.c", family: "joint", vector: "o4.joint.wheel" },
+] as const;
 
 export const DECLARED_SYMBOLS = [
   { symbol: "b3HashWorldState", file: "src/recording.c", vector: "whitebox.world-hash.v2" },

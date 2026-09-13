@@ -12,5 +12,9 @@ void b3OracleCallIntegratePositions( b3World* world, float h, b3Vec3* deltaPosit
 void b3OracleCallFinalize( b3World* world, float dt );
 void b3OracleResetRecycleVisits( void );
 extern uint32_t b3OracleRecycleVisits;
+extern uint32_t b3OracleO4ConvexManifoldVisits;
+extern uint32_t b3OracleO4MeshContactVisits;
+extern uint32_t b3OracleO4ConvexContactVisits;
+extern uint32_t b3OracleO4JointVisits;
 
 #endif
