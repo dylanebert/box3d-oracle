@@ -112,8 +112,8 @@ function patchOfficialSource(pristine: string, patched: string): { digest: strin
   return { digest: hookDigest() };
 }
 
-export function verifyDeclaredSymbols(source: string, nmEvidence: string): void {
-  for (const declared of DECLARED_SYMBOLS) {
+export function verifyDeclaredSymbols(source: string, nmEvidence: string, declarations = DECLARED_SYMBOLS): void {
+  for (const declared of declarations) {
     if (!readFileSync(join(source, declared.file), "utf8").includes(declared.symbol)) throw new OracleError(`declared upstream symbol is missing from source: ${declared.symbol}`);
     if (!nmEvidence.includes(declared.symbol)) throw new OracleError(`declared upstream symbol is missing from nm/link evidence: ${declared.symbol}`);
   }

@@ -86,6 +86,7 @@ test("declared provenance rejects a missing or wrong symbol", () => {
       writeFileSync(path, `${existsSync(path) ? readFileSync(path, "utf8") : ""} ${declared.symbol}`);
     }
     expect(() => verifyDeclaredSymbols(source, "b3HashWorldState")).toThrow(/missing from nm/);
+    expect(() => verifyDeclaredSymbols(source, "b3HashWorldState b3WrongBody", [{ symbol: "b3WrongBody", file: "src/recording.c", vector: "whitebox.wrong.v2" }])).toThrow(/missing from source/);
   } finally {
     rmSync(source, { recursive: true, force: true });
   }
