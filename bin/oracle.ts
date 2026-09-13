@@ -768,7 +768,55 @@ function buildLegacyScenario(source: string, official: string, build: string): s
   const anchor = "if ( step % B3_FIXTURE_STATE_INTERVAL == 0 || isLast )";
   if (input.split(anchor).length !== 2) throw new OracleError("legacy serialization patch anchor is not unique");
   const serializationOnly = input.replace(anchor, "if ( true ) /* B3_ORACLE_SERIALIZATION_ONLY */");
-  writeFileSync(join(migrationRoot, "fixtures", "gen.c"), serializationOnly);
+  const stateStart = serializationOnly.indexOf("static void WriteBodyStates(");
+  const stateEnd = serializationOnly.indexOf("\nstatic void RunScene(", stateStart);
+  if (stateStart < 0 || stateEnd < 0 || serializationOnly.indexOf("static void WriteBodyStates(", stateStart + 1) >= 0) throw new OracleError("legacy getter serialization patch anchor is not unique");
+  const bodyCapture = `static b3BodyId b3OracleBodyIds[512];
+static int b3OracleBodyCount;
+static b3BodyId b3OracleCreateBody( b3WorldId worldId, const b3BodyDef* def )
+{
+\tb3BodyId id = b3CreateBody( worldId, def );
+\tif ( b3OracleBodyCount < 512 ) b3OracleBodyIds[b3OracleBodyCount++] = id;
+\treturn id;
+}
+#define b3CreateBody b3OracleCreateBody
+
+`;
+  const getterStates = `static void WriteBodyStates( FILE* f, b3World* world )
+{
+\tfprintf( f, "[" );
+\tint bodyCount = world->bodies.count;
+\tbool first = true;
+\tfor ( int i = 0; i < bodyCount; ++i )
+\t{
+\t\tb3Body* body = world->bodies.data + i;
+\t\tif ( body->id != i ) continue;
+\t\tb3BodyId bodyId = b3OracleBodyIds[i];
+\t\tb3WorldTransform transform = b3Body_GetTransform( bodyId );
+\t\tif ( !first ) fprintf( f, "," );
+\t\tfirst = false;
+\t\tfprintf( f, "{\\\"p\\\":[" );
+\t\tWriteFloat( f, transform.p.x ); fprintf( f, "," ); WriteFloat( f, transform.p.y ); fprintf( f, "," ); WriteFloat( f, transform.p.z );
+\t\tfprintf( f, "],\\\"q\\\":[" );
+\t\tWriteFloat( f, transform.q.v.x ); fprintf( f, "," ); WriteFloat( f, transform.q.v.y ); fprintf( f, "," ); WriteFloat( f, transform.q.v.z ); fprintf( f, "," ); WriteFloat( f, transform.q.s );
+\t\tfprintf( f, "]" );
+\t\tb3BodyState* state = b3GetBodyState( world, body );
+\t\tif ( state != NULL )
+\t\t{
+\t\t\tb3Vec3 linear = b3Body_GetLinearVelocity( bodyId ); b3Vec3 angular = b3Body_GetAngularVelocity( bodyId );
+\t\t\tfprintf( f, ",\\\"v\\\":[" ); WriteFloat( f, linear.x ); fprintf( f, "," ); WriteFloat( f, linear.y ); fprintf( f, "," ); WriteFloat( f, linear.z );
+\t\t\tfprintf( f, "],\\\"w\\\":[" ); WriteFloat( f, angular.x ); fprintf( f, "," ); WriteFloat( f, angular.y ); fprintf( f, "," ); WriteFloat( f, angular.z ); fprintf( f, "]" );
+\t\t}
+\t\tfprintf( f, "}" );
+\t}
+\tfprintf( f, "]" );
+}
+`;
+  const capturedSource = serializationOnly.replace("#include <stdint.h>\n", "#include <stdint.h>\n\n" + bodyCapture);
+  const capturedStateStart = capturedSource.indexOf("static void WriteBodyStates(");
+  const capturedStateEnd = capturedSource.indexOf("\nstatic void RunScene(", capturedStateStart);
+  const getterSerialization = capturedSource.slice(0, capturedStateStart) + getterStates + capturedSource.slice(capturedStateEnd).replace("\tscene->build( worldId );", "\tb3OracleBodyCount = 0;\n\tscene->build( worldId );");
+  writeFileSync(join(migrationRoot, "fixtures", "gen.c"), getterSerialization);
   const object = join(build, "legacy-gen.o");
   checked(compiler(), ["-std=c11", "-ffunction-sections", "-fdata-sections", "-I", join(migrationRoot, "include"), "-I", join(migrationRoot, "src"), "-I", join(migrationRoot, "shared"), "-c", join(migrationRoot, "fixtures", "gen.c"), "-o", object]);
   checked("cmake", ["--build", build, "--target", "shared"]);
