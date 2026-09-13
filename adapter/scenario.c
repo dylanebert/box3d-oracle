@@ -31,6 +31,7 @@ static void writeScenario(FILE* out, bool* first, const OracleScenarioCommand* c
     b3WorldId worldId = b3CreateWorld(&worldDef);
     b3ShapeDef shapeDef = b3DefaultShapeDef();
     b3BoxHull hull = b3MakeBoxHull(0.25f, 0.25f, 0.25f);
+#ifdef BOX3D_SCENARIO_V2
     b3BodyDef bodyDef = b3DefaultBodyDef();
     bodyDef.type = b3_dynamicBody;
     bodyDef.position = (b3Pos){0.0, 5.0, 0.0};
@@ -60,6 +61,13 @@ static void writeScenario(FILE* out, bool* first, const OracleScenarioCommand* c
         b3BodyId anchor = b3CreateBody(worldId, &anchorDef); b3BoxHull anchorHull = b3MakeBoxHull(0.25f, 0.25f, 0.25f); b3CreateHullShape(anchor, &shapeDef, &anchorHull.base);
         body = b3CreateBody(worldId, &bodyDef); b3CreateHullShape(body, &shapeDef, &hull.base);
     }
+#else
+    b3BodyDef bodyDef = b3DefaultBodyDef();
+    bodyDef.type = b3_dynamicBody;
+    bodyDef.position = (b3Pos){0.0, 5.0, 0.0};
+    b3BodyId body = b3CreateBody(worldId, &bodyDef);
+    b3CreateHullShape(body, &shapeDef, &hull.base);
+#endif
 
     ScenarioObservation observations[SCENARIO_MAX_STEPS];
     if (command->steps >= SCENARIO_MAX_STEPS) { b3DestroyWorld(worldId); return; }
@@ -77,7 +85,11 @@ static void writeScenario(FILE* out, bool* first, const OracleScenarioCommand* c
     uint32_t gravityBits, dtBits;
     memcpy(&gravityBits, &gravityY, sizeof gravityBits);
     memcpy(&dtBits, &command->dt, sizeof dtBits);
+#ifdef BOX3D_SCENARIO_V2
     snprintf(input, sizeof(input), "{\"name\":\"%s\",\"legacyBuilder\":\"%s\",\"setupKind\":\"%s\",\"gravityY\":\"0x%08x\",\"timeStep\":\"0x%08x\",\"subStepCount\":%d,\"repeat\":%d}", command->name, command->legacyBuilder, command->setupKind, gravityBits, dtBits, command->subSteps, command->steps);
+#else
+    snprintf(input, sizeof(input), "{\"name\":\"%s\",\"gravityY\":\"0x%08x\",\"timeStep\":\"0x%08x\",\"subStepCount\":%d,\"repeat\":%d}", command->name, gravityBits, dtBits, command->subSteps, command->steps);
+#endif
     oracle_case_begin(out, first, command->id, "scenario", "b3World_Step", input);
     oracle_key(out, "publicObservations"); fputc('[', out);
     for (int step = 0; step < command->steps; ++step) { if (step) fputc(',', out); writeObservation(out, observations + step, step); }
