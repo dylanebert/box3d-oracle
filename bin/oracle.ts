@@ -24,6 +24,7 @@ function command(program: string, args: string[], cwd?: string): CommandResult {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 128 * 1024 * 1024,
   });
   if (result.error) throw new OracleError(`${program} failed to start: ${result.error.message}`);
   return {
@@ -738,7 +739,8 @@ const FOUNDATION_SCENARIO_ROSTER = ["free-fall", "sphere-drop", "box-stack", "sp
 const JOINT_SCENARIO_ROSTER = ["revolute-dd", "revolute-pendulum", "revolute-motor", "revolute-limit", "revolute-chain", "weld-dd", "parallel", "joint-contacts", "motor", "motor-spring", "distance", "distance-spring", "prismatic", "prismatic-motor", "spherical", "spherical-limits", "spherical-motor", "wheel", "wheel-spin", "wheel-steer", "ragdoll"] as const;
 const SURFACE_SCENARIO_ROSTER = ["ccd-drop", "ccd-bullet", "mesh-box", "mesh-sphere", "mesh-capsule", "mesh-ccd", "height-box", "height-sphere", "height-capsule", "height-ccd"] as const;
 const COMPOUND_SENSOR_SCENARIO_ROSTER = ["compound-hull", "compound-capsule", "compound-sphere", "compound-mesh", "compound-ccd", "sensor"] as const;
-const SCENARIO_FAMILIES: Record<string, string[]> = { foundation: [...FOUNDATION_SCENARIO_ROSTER], joints: [...JOINT_SCENARIO_ROSTER], surfaces: [...SURFACE_SCENARIO_ROSTER], "compound-sensor": [...COMPOUND_SENSOR_SCENARIO_ROSTER], all: [...FOUNDATION_SCENARIO_ROSTER, ...JOINT_SCENARIO_ROSTER, ...SURFACE_SCENARIO_ROSTER, ...COMPOUND_SENSOR_SCENARIO_ROSTER] };
+const BENCHMARK_SCENARIO_ROSTER = ["bench-pyramid", "bench-many-pyramids", "bench-joint-grid", "bench-washer", "bench-large-world", "bench-trees", "bench-junkyard", "bench-rain", "drift"] as const;
+const SCENARIO_FAMILIES: Record<string, string[]> = { foundation: [...FOUNDATION_SCENARIO_ROSTER], joints: [...JOINT_SCENARIO_ROSTER], surfaces: [...SURFACE_SCENARIO_ROSTER], "compound-sensor": [...COMPOUND_SENSOR_SCENARIO_ROSTER], benchmarks: [...BENCHMARK_SCENARIO_ROSTER], all: [...FOUNDATION_SCENARIO_ROSTER, ...JOINT_SCENARIO_ROSTER, ...SURFACE_SCENARIO_ROSTER, ...COMPOUND_SENSOR_SCENARIO_ROSTER, ...BENCHMARK_SCENARIO_ROSTER] };
 
 function legacyScenarioSource(cache: string, sha: string): string {
   requireFullSha(sha);
@@ -879,15 +881,16 @@ function scenarioMigrate(workspace: string, sha: string, legacySha: string, fami
   }
   const mutationCorpus = join(build, "mutation-commands-v1.json");
   const mutation = JSON.parse(readFileSync(corpus, "utf8")) as { scenarios: Array<{ name: string; commands: Array<Record<string, unknown>> }> };
-  const mutationTargetName = family === "joints" ? "revolute-motor" : family === "surfaces" ? "ccd-bullet" : family === "compound-sensor" || family === "all" ? "compound-hull" : "free-fall";
+  const mutationTargetName = family === "joints" ? "revolute-motor" : family === "surfaces" ? "ccd-bullet" : family === "compound-sensor" || family === "all" ? "compound-hull" : family === "benchmarks" ? "bench-large-world" : "free-fall";
   const mutationTargetIndex = mutation.scenarios.findIndex((scenario) => scenario.name === mutationTargetName);
   if (mutationTargetIndex < 0) throw new OracleError(`${mutationTargetName} mutation target is missing`);
   const mutationTarget = mutation.scenarios[mutationTargetIndex];
-  const mutationCommand = mutationTarget.commands.find((command) => family === "joints" ? command.op === "joint.revolute" : family === "surfaces" ? command.op === "body.create" && command.id === "b2" : family === "compound-sensor" || family === "all" ? command.op === "resource.compound" : command.op === "body.create");
+  const mutationCommand = mutationTarget.commands.find((command) => family === "joints" ? command.op === "joint.revolute" : family === "surfaces" ? command.op === "body.create" && command.id === "b2" : family === "compound-sensor" || family === "all" ? command.op === "resource.compound" : family === "benchmarks" ? command.op === "body.spawn" : command.op === "body.create");
   if (!mutationCommand) throw new OracleError(`${mutationTargetName} mutation command is missing`);
-  const mutationDescription = family === "joints" ? "joint.revolute.motorSpeed" : family === "surfaces" ? "ccd-bullet.body.create.linearVelocity.x" : family === "compound-sensor" || family === "all" ? "compound-hull.first-child.transform.p.x" : "body.create.angularVelocity";
+  const mutationDescription = family === "joints" ? "joint.revolute.motorSpeed" : family === "surfaces" ? "ccd-bullet.body.create.linearVelocity.x" : family === "compound-sensor" || family === "all" ? "compound-hull.first-child.transform.p.x" : family === "benchmarks" ? "bench-large-world.body.spawn.position.x" : "body.create.angularVelocity";
   if (family === "joints") mutationCommand.motorSpeed = "0x40a00000";
   else if (family === "surfaces") mutationCommand.linearVelocity = ["0x42c80000", "0x00000000", "0x00000000"];
+  else if (family === "benchmarks") mutationCommand.position = ["0x42c80000", "0x3fc00000", "0x00000000"];
   else if (family === "compound-sensor" || family === "all") { const children = mutationCommand.hulls as Array<Record<string, unknown>>; const first = children?.[0]; if (!first) throw new OracleError("compound-hull first child is missing"); const transform = first.transform as Record<string, unknown>; (transform.p as string[])[0] = "0x3f800000"; }
   else mutationCommand.angularVelocity = ["0x40000000", "0x40a00000", "0x40000000"];
   writeFileSync(mutationCorpus, canonicalJson(mutation));
