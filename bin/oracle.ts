@@ -128,11 +128,19 @@ function cmakeGenerator(): string | null {
   return ninja.status === 0 ? "Ninja" : null;
 }
 
+function stableUpstreamOutput(output: string): string {
+  return output
+    .replace(/^set: count = .*$/gm, "set: count = <timing>")
+    .replace(/^Test duration = .*$/gm, "Test duration = <timing>");
+}
+
 function buildAndTest(source: string, build: string): {
   configure: string[];
   buildCommand: string[];
   generator: string;
+  configureExit: number;
   configureEvidence: string;
+  buildExit: number;
   buildEvidence: string;
   test: { command: string[]; executable: string; executableSha256: string; exit: number; stdoutSha256: string; stderrSha256: string };
 } {
@@ -155,12 +163,13 @@ function buildAndTest(source: string, build: string): {
   const executable = executablePath(build);
   const result = runUpstreamTest(executable, source);
   const test = {
-    command: [relative(source, executable)],
-    executable: relative(source, executable),
+    command: [relative(build, executable)],
+    executable: relative(build, executable),
     executableSha256: digest(readFileSync(executable)),
     exit: result.exit,
-    stdoutSha256: digest(result.stdout),
+    stdoutSha256: digest(stableUpstreamOutput(result.stdout)),
     stderrSha256: digest(result.stderr),
+    stdoutNormalization: "set and total-duration timing fields replaced with <timing>",
   };
   if (result.exit !== 0) {
     throw new OracleError(`unmodified upstream test failed (exit ${result.exit})${result.stdout || result.stderr ? `:\n${result.stdout}${result.stderr}` : ""}`);
@@ -169,8 +178,10 @@ function buildAndTest(source: string, build: string): {
     configure,
     buildCommand,
     generator: generator ?? "CMake default",
-    configureEvidence: digest(`${configured.stdout}\n${configured.stderr}`),
-    buildEvidence: digest(`${built.stdout}\n${built.stderr}`),
+    configureExit: configured.status,
+    configureEvidence: digest(configure.join("\0")),
+    buildExit: built.status,
+    buildEvidence: digest(buildCommand.join("\0")),
     test,
   };
 }
@@ -220,11 +231,17 @@ export function upstreamTest(workspace: string, sha: string): { receiptPath: str
       scalar: true,
       options: evidence.configure.filter((value) => value.startsWith("-D")),
       generator: evidence.generator,
-      configureEvidenceSha256: evidence.configureEvidence,
-      buildCommand: evidence.buildCommand,
-      buildEvidenceSha256: evidence.buildEvidence,
+      configureExit: evidence.configureExit,
+      configureCommandSha256: evidence.configureEvidence,
+      buildCommand: ["cmake", "--build", `<build-cache>/${sha}`, "--target", "test"],
+      buildExit: evidence.buildExit,
+      buildCommandSha256: evidence.buildEvidence,
     },
-    test: evidence.test,
+    test: {
+      ...evidence.test,
+      command: [`<build-cache>/${sha}/${evidence.test.command[0]}`],
+      executable: `<build-cache>/${sha}/${evidence.test.executable}`,
+    },
   };
   return { receiptPath: writeReceipt(root, receipt, sha), receipt };
 }

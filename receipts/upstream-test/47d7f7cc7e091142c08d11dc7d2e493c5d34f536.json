@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "source": {
+    "url": "https://github.com/erincatto/box3d.git",
+    "ref": "refs/heads/main",
+    "requestedSha": "47d7f7cc7e091142c08d11dc7d2e493c5d34f536",
+    "mainSha": "47d7f7cc7e091142c08d11dc7d2e493c5d34f536",
+    "reachable": true,
+    "checkout": "detached",
+    "commit": "47d7f7cc7e091142c08d11dc7d2e493c5d34f536",
+    "tree": "0a6472d03ff61c9af28216443fba341a21cbed96",
+    "clean": true
+  },
+  "range": {
+    "channel": "refs/heads/main",
+    "lowerBound": "47d7f7cc7e091142c08d11dc7d2e493c5d34f536",
+    "upperBound": "47d7f7cc7e091142c08d11dc7d2e493c5d34f536",
+    "relation": "lowerBound is an ancestor of upperBound"
+  },
+  "build": {
+    "profile": "Release",
+    "scalar": true,
+    "options": [
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DBOX3D_DISABLE_SIMD=ON",
+      "-DBOX3D_SAMPLES=OFF",
+      "-DBOX3D_BENCHMARKS=OFF",
+      "-DBOX3D_DOCS=OFF",
+      "-DBOX3D_UNIT_TESTS=ON",
+      "-DBOX3D_VALIDATE=ON"
+    ],
+    "generator": "Ninja",
+    "configureExit": 0,
+    "configureCommandSha256": "2145f587c9866fcde5e6fabdaefb8988017f9ee2773468499778e93bd6321dba",
+    "buildCommand": [
+      "cmake",
+      "--build",
+      "<build-cache>/47d7f7cc7e091142c08d11dc7d2e493c5d34f536",
+      "--target",
+      "test"
+    ],
+    "buildExit": 0,
+    "buildCommandSha256": "ac67acf3a6af2a6d35083265630a3f8facd5b883cf26ec16b060be7785146314"
+  },
+  "test": {
+    "command": [
+      "<build-cache>/47d7f7cc7e091142c08d11dc7d2e493c5d34f536/bin/test"
+    ],
+    "executable": "<build-cache>/47d7f7cc7e091142c08d11dc7d2e493c5d34f536/bin/test",
+    "executableSha256": "d35eda0fb8e5b44cb4c2288aa8d0449e39497cec1cf336287cd1ae0aafc30ae8",
+    "exit": 0,
+    "stdoutSha256": "21439c839f4569600f235a52a396eff53eb0fac71e669013a8a7d04f25930e8b",
+    "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdoutNormalization": "set and total-duration timing fields replaced with <timing>"
+  }
+}

@@ -28,11 +28,7 @@ function fakeRemote(): { root: string; remote: string; first: string; unreachabl
   git(seed, "commit", "-q", "-m", "first");
   const first = git(seed, "rev-parse", "HEAD");
   git(root, "clone", "--bare", "-q", seed, remote);
-  writeFileSync(join(seed, "source.txt"), "unreachable\n");
-  git(seed, "add", "source.txt");
-  git(seed, "commit", "-q", "-m", "unreachable");
-  const unreachable = git(seed, "rev-parse", "HEAD");
-  git(remote, "fetch", "-q", seed, `HEAD:refs/heads/hidden`);
+  const unreachable = "f".repeat(40);
   return { root, remote, first, unreachable };
 }
 
