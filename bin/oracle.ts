@@ -734,8 +734,9 @@ function compareTrees(expected: string, actual: string, includeManifest = true):
     if (!a.equals(b)) throw new OracleError(`bundle file differs: ${name}`);
   }
 }
-const SCENARIO_ROSTER = ["free-fall", "sphere-drop", "box-stack", "sphere-sleep", "box-sleep", "wake-drop", "split-slide"] as const;
-const SCENARIO_FAMILIES: Record<string, string[]> = { foundation: [...SCENARIO_ROSTER], all: [...SCENARIO_ROSTER] };
+const FOUNDATION_SCENARIO_ROSTER = ["free-fall", "sphere-drop", "box-stack", "sphere-sleep", "box-sleep", "wake-drop", "split-slide"] as const;
+const JOINT_SCENARIO_ROSTER = ["revolute-dd", "revolute-pendulum", "revolute-motor", "revolute-limit", "revolute-chain", "weld-dd", "parallel", "joint-contacts", "motor", "motor-spring", "distance", "distance-spring", "prismatic", "prismatic-motor", "spherical", "spherical-limits", "spherical-motor", "wheel", "wheel-spin", "wheel-steer", "ragdoll"] as const;
+const SCENARIO_FAMILIES: Record<string, string[]> = { foundation: [...FOUNDATION_SCENARIO_ROSTER], joints: [...JOINT_SCENARIO_ROSTER], all: [...FOUNDATION_SCENARIO_ROSTER, ...JOINT_SCENARIO_ROSTER] };
 
 function legacyScenarioSource(cache: string, sha: string): string {
   requireFullSha(sha);
@@ -805,7 +806,9 @@ function scenarioMigrate(workspace: string, sha: string, legacySha: string, fami
   checked(legacy, [legacyOut]);
   const corpusJson = JSON.parse(readFileSync(corpus, "utf8")) as { scenarios: Array<{ name: string; id: string; commands: Array<{ id: string; op: string }> }> };
   const selected = corpusJson.scenarios.map((scenario, index) => ({ ...scenario, index })).filter((scenario) => roster.includes(scenario.name));
-  if (selected.length !== roster.length || selected.some((item, index) => item.name !== roster[index])) throw new OracleError(`scenario family ${family} does not match the exact ordered roster`);
+  if (selected.length !== roster.length || selected.some((item, index) => item.name !== roster[index] || item.id !== `s1.${roster[index]}.v1`)) throw new OracleError(`scenario family ${family} does not match the exact ordered roster and IDs`);
+  const cumulativeRoster = SCENARIO_FAMILIES.all;
+  if (family === "all" && (corpusJson.scenarios.length !== cumulativeRoster.length || corpusJson.scenarios.some((item, index) => item.name !== cumulativeRoster[index] || item.id !== `s1.${cumulativeRoster[index]}.v1`))) throw new OracleError("cumulative scenario roster is not exact");
   let mismatches = 0;
   const receipts: unknown[] = [];
   for (const item of selected) {
@@ -844,18 +847,34 @@ function scenarioMigrate(workspace: string, sha: string, legacySha: string, fami
   writeFileSync(malformedUnconsumed, canonicalJson(malformedUnconsumedData));
   const malformedUnconsumedResult = command("bun", [compilerScript, malformedUnconsumed, join(build, "malformed-unconsumed.h")]);
   if (malformedUnconsumedResult.status === 0) mismatches += 1;
+  if (family === "joints") {
+    const malformedJoint = join(build, "malformed-missing-joint.json");
+    const malformedJointData = JSON.parse(readFileSync(corpus, "utf8")) as { scenarios: Array<{ name: string; commands: Array<Record<string, unknown>> }> };
+    const jointScenario = malformedJointData.scenarios.find((scenario) => scenario.name === "revolute-motor");
+    if (!jointScenario) throw new OracleError("revolute-motor deletion target is missing");
+    jointScenario.commands = jointScenario.commands.filter((command) => command.op !== "joint.revolute");
+    writeFileSync(malformedJoint, canonicalJson(malformedJointData));
+    const malformedJointResult = command("bun", [compilerScript, malformedJoint, join(build, "malformed-missing-joint.h")]);
+    if (malformedJointResult.status === 0) mismatches += 1;
+  }
   const mutationCorpus = join(build, "mutation-commands-v1.json");
-  const mutation = JSON.parse(readFileSync(corpus, "utf8")) as { scenarios: Array<{ commands: Array<Record<string, unknown>> }> };
-  const mutationBody = mutation.scenarios[0].commands.find((command) => command.op === "body.create");
-  if (!mutationBody) throw new OracleError("free-fall mutation target is missing");
-  mutationBody.angularVelocity = ["0x40000000", "0x40a00000", "0x40000000"];
+  const mutation = JSON.parse(readFileSync(corpus, "utf8")) as { scenarios: Array<{ name: string; commands: Array<Record<string, unknown>> }> };
+  const mutationTargetName = family === "joints" ? "revolute-motor" : "free-fall";
+  const mutationTargetIndex = mutation.scenarios.findIndex((scenario) => scenario.name === mutationTargetName);
+  if (mutationTargetIndex < 0) throw new OracleError(`${mutationTargetName} mutation target is missing`);
+  const mutationTarget = mutation.scenarios[mutationTargetIndex];
+  const mutationCommand = mutationTarget.commands.find((command) => command.op === (family === "joints" ? "joint.revolute" : "body.create"));
+  if (!mutationCommand) throw new OracleError(`${mutationTargetName} mutation command is missing`);
+  const mutationDescription = family === "joints" ? "joint.revolute.motorSpeed" : "body.create.angularVelocity";
+  if (family === "joints") mutationCommand.motorSpeed = "0x40a00000";
+  else mutationCommand.angularVelocity = ["0x40000000", "0x40a00000", "0x40000000"];
   writeFileSync(mutationCorpus, canonicalJson(mutation));
   const mutationBuild = join(cache, "scenario-builds", `${sha}-${family}-mutation`); rmSync(mutationBuild, { recursive: true, force: true }); mkdirSync(mutationBuild, { recursive: true });
   const mutationTable = join(mutationBuild, "scenario_table.h"); checked("bun", [compilerScript, mutationCorpus, mutationTable]);
   const mutationEvidence = buildScenario(patched, mutationBuild, dirname(mutationTable));
-  const baselineMutation = command(evidence.executable, ["--index", "0"]); const changedMutation = command(mutationEvidence.executable, ["--index", "0"]);
+  const baselineMutation = command(evidence.executable, ["--index", String(mutationTargetIndex)]); const changedMutation = command(mutationEvidence.executable, ["--index", String(mutationTargetIndex)]);
   if (baselineMutation.status !== 0 || changedMutation.status !== 0 || baselineMutation.stdout === changedMutation.stdout) mismatches += 1;
-  const report = { schema: "box3d-oracle/scenario-migration/v1", family, officialSha: sha, legacySha, roster: selected.map((item) => ({ id: item.id, name: item.name })), receipts, mutation: { command: "body.create.angularVelocity", officialAdapterChanged: baselineMutation.stdout !== changedMutation.stdout, shallotAdapterChecked: "box3d-scenario-command-corpus" }, mismatchCount: mismatches, publication: mismatches === 0 ? "accepted" : "refused" };
+  const report = { schema: "box3d-oracle/scenario-migration/v1", family, officialSha: sha, legacySha, roster: selected.map((item) => ({ id: item.id, name: item.name })), receipts, mutation: { command: mutationDescription, scenario: mutationTargetName, officialAdapterChanged: baselineMutation.stdout !== changedMutation.stdout, shallotAdapterChecked: "box3d-scenario-migration-joints" }, mismatchCount: mismatches, publication: mismatches === 0 ? "accepted" : "refused" };
   writeFileSync(join(build, "scenario-migration.json"), canonicalJson(report));
   console.log(JSON.stringify(report, null, 2));
   if (mismatches !== 0) throw new OracleError(`scenario migration refused: ${mismatches} mismatches`);

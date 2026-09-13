@@ -3,64 +3,56 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
 type Command = Record<string, unknown>;
-type Scenario = { id: string; name: string; commands: Command[]; stepCount: number };
+type Scenario = { id: string; name: string; commands: Command[]; stepCount: number; requiredJointIds?: string[] };
 const [input, output] = Bun.argv.slice(2);
 if (!input || !output) throw new Error("usage: compile-scenarios.ts <commands-v1.json> <temporary-header.h>");
 const bytes = readFileSync(input);
 const corpus = JSON.parse(bytes.toString()) as { schema?: string; corpusVersion?: number; scenarios?: Scenario[] };
 if (corpus.schema !== "box3d-oracle/scenario-command/v1" || corpus.corpusVersion !== 1 || !Array.isArray(corpus.scenarios)) throw new Error("invalid scenario command corpus");
-const opCode: Record<string, number> = { "world.create": 1, "body.create": 2, "resource.box": 3, "resource.sphere": 4, "shape.create": 5, step: 6, observe: 7, hash: 8 };
-const names = new Set<string>();
-const f32 = (value: unknown): string => {
-  if (typeof value !== "string" || !/^0x[0-9a-f]{8}$/.test(value)) throw new Error(`f32 input is not fixed-width hex: ${String(value)}`);
-  return value;
-};
-const words = (values: unknown[], count: number): string[] => {
-  if (!Array.isArray(values) || values.length !== count) throw new Error(`expected ${count} f32 words`);
-  return values.map(f32);
-};
+const opCode: Record<string, number> = { "world.create": 1, "body.create": 2, "resource.box": 3, "resource.sphere": 4, "resource.capsule": 5, "shape.create": 6, "joint.revolute": 7, "joint.weld": 8, "joint.parallel": 9, "joint.motor": 10, "joint.distance": 11, "joint.prismatic": 12, "joint.spherical": 13, "joint.wheel": 14, step: 15, observe: 16, hash: 17 };
+const jointKinds: Record<string, number> = { revolute: 1, weld: 2, parallel: 3, motor: 4, distance: 5, prismatic: 6, spherical: 7, wheel: 8 };
+const jointFields = ["targetAngle","hertz","dampingRatio","lowerAngle","upperAngle","maxMotorTorque","motorSpeed","maxTorque","maxVelocityForce","maxVelocityTorque","linearHertz","linearDampingRatio","maxSpringForce","angularHertz","angularDampingRatio","maxSpringTorque","length","minLength","maxLength","maxMotorForce","targetTranslation","lowerTranslation","upperTranslation","coneAngle","lowerTwistAngle","upperTwistAngle","maxSteeringTorque","targetSteeringAngle","lowerSteeringLimit","upperSteeringLimit","maxSpinTorque","spinSpeed","suspensionHertz","suspensionDampingRatio","lowerSuspensionLimit","upperSuspensionLimit","steeringHertz","steeringDampingRatio","linearVelocity","angularVelocity","motorVelocity"];
+const boolFields = ["enableSpring", "enableLimit", "enableMotor", "enableConeLimit", "enableTwistLimit", "enableSuspensionSpring", "enableSuspensionLimit", "enableSpinMotor", "enableSteering", "enableSteeringLimit"];
+const fieldBit = (name: string) => { const i = jointFields.indexOf(name); if (i < 0) throw new Error(`unknown joint field ${name}`); return `UINT64_C(1) << ${i}`; };
+const boolBit = (name: string) => { const i = boolFields.indexOf(name); if (i < 0) throw new Error(`unknown joint boolean field ${name}`); return `UINT64_C(1) << ${48 + i}`; };
+const f32 = (value: unknown): string => { if (typeof value !== "string" || !/^0x[0-9a-f]{8}$/.test(value)) throw new Error(`f32 input is not fixed-width hex: ${String(value)}`); return value; };
+const words = (values: unknown[], count: number): string[] => { if (!Array.isArray(values) || values.length !== count) throw new Error(`expected ${count} f32 words`); return values.map(f32); };
 const cString = (value: string): string => JSON.stringify(value);
+const numberId = (value: unknown, prefix: string, scene: string): number => { const match = new RegExp(`^${prefix}([0-9]+)$`).exec(String(value)); if (!match) throw new Error(`invalid ${prefix} id ${String(value)} in ${scene}`); return Number(match[1]); };
 const arrays: string[] = [];
 const records: string[] = [];
+const names = new Set<string>();
 for (let si = 0; si < corpus.scenarios.length; si++) {
   const scenario = corpus.scenarios[si];
   if (!scenario.id || !scenario.name || !Array.isArray(scenario.commands) || !Number.isInteger(scenario.stepCount)) throw new Error(`invalid scenario at ${si}`);
   if (names.has(scenario.name) || names.has(scenario.id)) throw new Error(`duplicate scenario ${scenario.name}`);
   names.add(scenario.name); names.add(scenario.id);
-  const ids = new Set<string>();
+  const ids = new Set<string>(); const definedBodies = new Set<number>(); const definedResources = new Set<number>(); const definedJoints = new Set<string>();
   const rows: string[] = [];
   for (const command of scenario.commands) {
-    const op = String(command.op ?? "");
-    if (!(op in opCode)) throw new Error(`unknown command op ${op}`);
-    const id = String(command.id ?? "");
-    if (!id || ids.has(id)) throw new Error(`duplicate or missing command id ${id} in ${scenario.name}`);
-    ids.add(id);
-    const values = new Array<string>(12).fill("0x00000000");
-    let a = -1, b = -1, step = -1, bodyCount = 0, kind = 0;
-    let flag0 = 0, flag1 = 0;
-    const bodies = new Array<number>(8).fill(-1);
-    if (op === "world.create") { words(command.gravity as unknown[], 3).forEach((x, i) => values[i] = x); flag0 = command.enableSleep === true ? 1 : 0; flag1 = command.enableContinuous === true ? 1 : 0; }
-    if (op === "body.create") {
-      a = Number(String(command.id).slice(1));
-      const type = command.type === "static" ? 0 : command.type === "kinematic" ? 1 : command.type === "dynamic" ? 2 : -1;
-      if (type < 0) throw new Error(`unknown body type in ${scenario.name}`);
-      kind = type; words(command.position as unknown[], 3).forEach((x, i) => values[i] = x); words(command.linearVelocity as unknown[], 3).forEach((x, i) => values[3 + i] = x); words(command.angularVelocity as unknown[], 3).forEach((x, i) => values[6 + i] = x); if (command.angularDamping !== undefined) values[9] = f32(command.angularDamping);
-    }
-    if (op === "resource.box") { a = Number(String(command.id).slice(1)); words(command.halfExtents as unknown[], 3).forEach((x, i) => values[i] = x); kind = 1; }
-    if (op === "resource.sphere") { a = Number(String(command.id).slice(1)); values[0] = f32(command.radius); kind = 2; }
-    if (op === "shape.create") { a = Number(String(command.id).slice(1)); b = Number(String(command.body).slice(1)); const r = Number(String(command.resource).slice(1)); if (!Number.isInteger(b) || !Number.isInteger(r)) throw new Error(`invalid shape reference in ${scenario.name}`); values[0] = `0x${r.toString(16).padStart(8, "0")}`; kind = command.kind === "box" ? 1 : command.kind === "sphere" ? 2 : -1; if (kind < 0) throw new Error(`unknown shape kind in ${scenario.name}`); }
-    if (op === "step") { step = Number(id.slice(5)); values[0] = f32(command.timeStep); a = Number(command.subStepCount); }
-    if (op === "observe") { step = Number(command.step); const list = command.bodies; if (!Array.isArray(list) || list.length > 8) throw new Error(`invalid observation list in ${scenario.name}`); for (const item of list) { const n = Number(String(item).slice(1)); if (!Number.isInteger(n)) throw new Error(`invalid observed body ${String(item)}`); bodies[bodyCount++] = n; } }
-    if (op === "hash") step = Number(command.step);
-    if ((op === "step" || op === "observe" || op === "hash") && (step < 0 || step >= scenario.stepCount)) throw new Error(`invalid step in ${scenario.name}`);
-    rows.push(`  { ${opCode[op]}, ${cString(id)}, ${a}, ${b}, ${kind}, ${step}, ${bodyCount}, ${flag0}, ${flag1}, { ${values.join(", ")} }, { ${bodies.join(", ")} } },`);
+    const op = String(command.op ?? ""); if (!(op in opCode)) throw new Error(`unknown command op ${op}`);
+    const id = String(command.id ?? ""); if (!id || ids.has(id)) throw new Error(`duplicate or missing command id ${id} in ${scenario.name}`); ids.add(id);
+    const values = new Array<string>(68).fill("0x00000000"); const bodies = new Array<number>(32).fill(-1);
+    let a = -1, b = -1, kind = 0, step = -1, bodyCount = 0, substeps = 0; let flags = "UINT64_C(0)";
+    if (op === "world.create") { words(command.gravity as unknown[], 3).forEach((x, i) => values[i] = x); if (command.enableSleep === true) flags += " | UINT64_C(1) << 62"; if (command.enableContinuous === true) flags += " | UINT64_C(1) << 63"; }
+    else if (op === "body.create") { a = numberId(id, "b", scenario.name); if (definedBodies.has(a)) throw new Error(`duplicate body ${id}`); definedBodies.add(a); kind = command.type === "static" ? 0 : command.type === "kinematic" ? 1 : command.type === "dynamic" ? 2 : -1; if (kind < 0) throw new Error(`unknown body type in ${scenario.name}`); words(command.position as unknown[], 3).forEach((x, i) => values[i] = x); words((command.rotation ?? ["0x00000000", "0x00000000", "0x00000000", "0x3f800000"]) as unknown[], 4).forEach((x, i) => values[3 + i] = x); words(command.linearVelocity as unknown[], 3).forEach((x, i) => values[7 + i] = x); words(command.angularVelocity as unknown[], 3).forEach((x, i) => values[10 + i] = x); values[13] = f32(command.linearDamping ?? "0x00000000"); values[14] = f32(command.angularDamping ?? "0x00000000"); }
+    else if (op.startsWith("resource.")) { a = numberId(id, "r", scenario.name); if (definedResources.has(a)) throw new Error(`duplicate resource ${id}`); definedResources.add(a); if (op === "resource.box") { kind = 1; words(command.halfExtents as unknown[], 3).forEach((x, i) => values[i] = x); } else if (op === "resource.sphere") { kind = 2; values[0] = f32(command.radius); } else { kind = 3; words(command.center1 as unknown[], 3).forEach((x, i) => values[i] = x); words(command.center2 as unknown[], 3).forEach((x, i) => values[3 + i] = x); values[6] = f32(command.radius); } }
+    else if (op === "shape.create") { const shapeMatch = /^s(?:h)?([0-9]+)$/.exec(id); if (!shapeMatch) throw new Error(`invalid shape id ${id} in ${scenario.name}`); a = Number(shapeMatch[1]); b = numberId(command.body, "b", scenario.name); const r = numberId(command.resource, "r", scenario.name); if (!definedBodies.has(b) || !definedResources.has(r)) throw new Error(`shape reference before definition in ${scenario.name}`); kind = command.kind === "box" ? 1 : command.kind === "sphere" ? 2 : command.kind === "capsule" ? 3 : -1; if (kind < 0) throw new Error(`unknown shape kind in ${scenario.name}`); values[0] = `0x${r.toString(16).padStart(8, "0")}`; values[1] = f32(command.rollingResistance ?? "0x00000000"); values[2] = `0x${Number(command.groupIndex ?? 0).toString(16).padStart(8, "0")}`; }
+    else if (op.startsWith("joint.")) { const type = op.slice(6); kind = jointKinds[type]; a = numberId(command.bodyA, "b", scenario.name); b = numberId(command.bodyB, "b", scenario.name); if (!definedBodies.has(a) || !definedBodies.has(b)) throw new Error(`joint ${id} references body before definition in ${scenario.name}`); definedJoints.add(id); const fa = command.localFrameA as Record<string, unknown>; const fb = command.localFrameB as Record<string, unknown>; words(fa.p as unknown[], 3).forEach((x, i) => values[i] = x); words(fa.q as unknown[], 4).forEach((x, i) => values[3 + i] = x); words(fb.p as unknown[], 3).forEach((x, i) => values[7 + i] = x); words(fb.q as unknown[], 4).forEach((x, i) => values[10 + i] = x); for (const [name, value] of Object.entries(command)) { if (name === "op" || name === "id" || name === "bodyA" || name === "bodyB" || name === "localFrameA" || name === "localFrameB") continue; if (typeof value === "boolean") { if (value) flags += ` | ${boolBit(name)}`; } else if (Array.isArray(value)) { words(value, 3).forEach((x, i) => values[56 + ["linearVelocity", "angularVelocity", "motorVelocity"].indexOf(name) * 3 + i] = x); flags += ` | ${fieldBit(name)}`; } else { values[14 + jointFields.indexOf(name)] = f32(value); flags += ` | ${fieldBit(name)}`; } } }
+    else if (op === "step") { step = Number(id.slice(5)); if (!Number.isInteger(step)) throw new Error(`invalid step id ${id}`); values[0] = f32(command.timeStep); substeps = Number(command.subStepCount); if (!Number.isInteger(substeps) || substeps < 1) throw new Error(`invalid substep count in ${scenario.name}`); }
+    else if (op === "observe") { step = Number(command.step); if (!Number.isInteger(step)) throw new Error(`invalid observation step in ${scenario.name}`); const list = command.bodies; if (!Array.isArray(list) || list.length > 32) throw new Error(`invalid observation list in ${scenario.name}`); for (const item of list) bodies[bodyCount++] = numberId(item, "b", scenario.name); }
+    else if (op === "hash") { step = Number(command.step); }
+    if (["step", "observe", "hash"].includes(op) && (step < 0 || step >= scenario.stepCount)) throw new Error(`invalid step in ${scenario.name}`);
+    rows.push(`  { ${opCode[op]}, ${cString(id)}, ${a}, ${b}, ${kind}, ${step}, ${bodyCount}, ${substeps}, ${flags}, { ${values.join(", ")} }, { ${bodies.join(", ")} } },`);
   }
+  const required = scenario.requiredJointIds ?? [];
+  if (new Set(required).size !== required.length || definedJoints.size !== required.length || required.some((id) => !definedJoints.has(id))) throw new Error(`required joint reference validation failed in ${scenario.name}`);
   arrays.push(`static const ScenarioCommand scenario_commands_${si}[] = {\n${rows.join("\n")}\n};`);
-  records.push(`  { ${cString(scenario.id)}, ${cString(scenario.name)}, scenario_commands_${si}, ${rows.length} },`);
+  records.push(`  { ${cString(scenario.id)}, ${cString(scenario.name)}, scenario_commands_${si}, ${rows.length}, ${required.length} },`);
   if (!scenario.commands.some((c) => c.op === "world.create")) throw new Error(`scenario ${scenario.name} has no world.create`);
   for (let step = 0; step < scenario.stepCount; step++) if (!scenario.commands.some((c) => c.op === "observe" && c.step === step) || !scenario.commands.some((c) => c.op === "hash" && c.step === step)) throw new Error(`scenario ${scenario.name} has incomplete observation schedule at ${step}`);
 }
 const digest = createHash("sha256").update(bytes).digest("hex");
-const header = `#ifndef BOX3D_SCENARIO_TABLE_V1_H\n#define BOX3D_SCENARIO_TABLE_V1_H\n#include <stdint.h>\n#define SCENARIO_CORPUS_DIGEST \"${digest}\"\nenum ScenarioOp { SCENARIO_WORLD=1, SCENARIO_BODY=2, SCENARIO_BOX_RESOURCE=3, SCENARIO_SPHERE_RESOURCE=4, SCENARIO_SHAPE=5, SCENARIO_STEP=6, SCENARIO_OBSERVE=7, SCENARIO_HASH=8 };\ntypedef struct ScenarioCommand { int op; const char* id; int a; int b; int kind; int step; int bodyCount; int flag0; int flag1; uint32_t values[12]; int bodies[8]; } ScenarioCommand;\ntypedef struct ScenarioRecord { const char* id; const char* name; const ScenarioCommand* commands; int commandCount; } ScenarioRecord;\n${arrays.join("\n")}\nstatic const ScenarioRecord scenario_records[] = {\n${records.join("\n")}\n};\nstatic const int scenario_record_count = ${corpus.scenarios.length};\n#endif\n`;
+const header = `#ifndef BOX3D_SCENARIO_TABLE_V1_H\n#define BOX3D_SCENARIO_TABLE_V1_H\n#include <stdint.h>\n#define SCENARIO_CORPUS_DIGEST "${digest}"\nenum ScenarioOp { SCENARIO_WORLD=1, SCENARIO_BODY=2, SCENARIO_BOX_RESOURCE=3, SCENARIO_SPHERE_RESOURCE=4, SCENARIO_CAPSULE_RESOURCE=5, SCENARIO_SHAPE=6, SCENARIO_REVOLUTE=7, SCENARIO_WELD=8, SCENARIO_PARALLEL=9, SCENARIO_MOTOR=10, SCENARIO_DISTANCE=11, SCENARIO_PRISMATIC=12, SCENARIO_SPHERICAL=13, SCENARIO_WHEEL=14, SCENARIO_STEP=15, SCENARIO_OBSERVE=16, SCENARIO_HASH=17 };\ntypedef struct ScenarioCommand { int op; const char* id; int a; int b; int kind; int step; int bodyCount; int substeps; uint64_t flags; uint32_t values[68]; int bodies[32]; } ScenarioCommand;\ntypedef struct ScenarioRecord { const char* id; const char* name; const ScenarioCommand* commands; int commandCount; int requiredJointCount; } ScenarioRecord;\n${arrays.join("\n")}\nstatic const ScenarioRecord scenario_records[] = {\n${records.join("\n")}\n};\nstatic const int scenario_record_count = ${corpus.scenarios.length};\n#endif\n`;
 writeFileSync(output, header);
-console.log(JSON.stringify({ schema: corpus.schema, digest, scenarios: corpus.scenarios.map((s) => ({ id: s.id, name: s.name, commands: s.commands.length })) }));
+console.log(JSON.stringify({ schema: corpus.schema, digest, scenarios: corpus.scenarios.map((s) => ({ id: s.id, name: s.name, commands: s.commands.length, joints: (s.requiredJointIds ?? []).length })) }));
