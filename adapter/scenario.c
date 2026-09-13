@@ -29,13 +29,37 @@ static void writeScenario(FILE* out, bool* first, const OracleScenarioCommand* c
     worldDef.enableContinuous = command->continuous != 0;
     worldDef.workerCount = 1;
     b3WorldId worldId = b3CreateWorld(&worldDef);
+    b3ShapeDef shapeDef = b3DefaultShapeDef();
+    b3BoxHull hull = b3MakeBoxHull(0.25f, 0.25f, 0.25f);
     b3BodyDef bodyDef = b3DefaultBodyDef();
     bodyDef.type = b3_dynamicBody;
     bodyDef.position = (b3Pos){0.0, 5.0, 0.0};
-    b3BodyId body = b3CreateBody(worldId, &bodyDef);
-    b3ShapeDef shapeDef = b3DefaultShapeDef();
-    b3BoxHull hull = b3MakeBoxHull(0.25f, 0.25f, 0.25f);
-    b3CreateHullShape(body, &shapeDef, &hull.base);
+    b3BodyId body;
+    if (strcmp(command->setupKind, "free") == 0) {
+        body = b3CreateBody(worldId, &bodyDef);
+        b3CreateHullShape(body, &shapeDef, &hull.base);
+    } else if (strcmp(command->setupKind, "sphere-drop") == 0) {
+        b3BodyDef groundDef = b3DefaultBodyDef();
+        groundDef.position = (b3Pos){0.0, -1.0, 0.0};
+        b3BodyId ground = b3CreateBody(worldId, &groundDef);
+        b3BoxHull groundHull = b3MakeBoxHull(20.0f, 1.0f, 20.0f);
+        b3CreateHullShape(ground, &shapeDef, &groundHull.base);
+        b3Sphere sphere = {{0.0f, 0.0f, 0.0f}, 0.5f};
+        bodyDef.position = (b3Pos){0.0, 1.0, 0.0};
+        body = b3CreateBody(worldId, &bodyDef);
+        b3CreateSphereShape(body, &shapeDef, &sphere);
+        for (int i = 1; i < 5; ++i) { bodyDef.position.y = 1.0 + 1.5 * i; b3BodyId extra = b3CreateBody(worldId, &bodyDef); b3CreateSphereShape(extra, &shapeDef, &sphere); }
+    } else if (strcmp(command->setupKind, "stack") == 0 || strcmp(command->setupKind, "bench") == 0) {
+        b3BodyDef groundDef = b3DefaultBodyDef(); groundDef.position = (b3Pos){0.0, -1.0, 0.0};
+        b3BodyId ground = b3CreateBody(worldId, &groundDef); b3BoxHull groundHull = b3MakeBoxHull(20.0f, 1.0f, 20.0f); b3CreateHullShape(ground, &shapeDef, &groundHull.base);
+        bodyDef.position = (b3Pos){0.0, 0.5, 0.0}; body = b3CreateBody(worldId, &bodyDef); b3CreateHullShape(body, &shapeDef, &hull.base);
+        int count = strcmp(command->setupKind, "bench") == 0 ? 8 : 5;
+        for (int i = 1; i < count; ++i) { bodyDef.position.y = 0.5 + i; b3BodyId extra = b3CreateBody(worldId, &bodyDef); b3CreateHullShape(extra, &shapeDef, &hull.base); }
+    } else {
+        b3BodyDef anchorDef = b3DefaultBodyDef(); anchorDef.position = (b3Pos){0.0, 5.0, 0.0};
+        b3BodyId anchor = b3CreateBody(worldId, &anchorDef); b3BoxHull anchorHull = b3MakeBoxHull(0.25f, 0.25f, 0.25f); b3CreateHullShape(anchor, &shapeDef, &anchorHull.base);
+        body = b3CreateBody(worldId, &bodyDef); b3CreateHullShape(body, &shapeDef, &hull.base);
+    }
 
     ScenarioObservation observations[SCENARIO_MAX_STEPS];
     if (command->steps >= SCENARIO_MAX_STEPS) { b3DestroyWorld(worldId); return; }
@@ -53,7 +77,7 @@ static void writeScenario(FILE* out, bool* first, const OracleScenarioCommand* c
     uint32_t gravityBits, dtBits;
     memcpy(&gravityBits, &gravityY, sizeof gravityBits);
     memcpy(&dtBits, &command->dt, sizeof dtBits);
-    snprintf(input, sizeof(input), "{\"name\":\"%s\",\"gravityY\":\"0x%08x\",\"timeStep\":\"0x%08x\",\"subStepCount\":%d,\"repeat\":%d}", command->name, gravityBits, dtBits, command->subSteps, command->steps);
+    snprintf(input, sizeof(input), "{\"name\":\"%s\",\"legacyBuilder\":\"%s\",\"setupKind\":\"%s\",\"gravityY\":\"0x%08x\",\"timeStep\":\"0x%08x\",\"subStepCount\":%d,\"repeat\":%d}", command->name, command->legacyBuilder, command->setupKind, gravityBits, dtBits, command->subSteps, command->steps);
     oracle_case_begin(out, first, command->id, "scenario", "b3World_Step", input);
     oracle_key(out, "publicObservations"); fputc('[', out);
     for (int step = 0; step < command->steps; ++step) { if (step) fputc(',', out); writeObservation(out, observations + step, step); }
