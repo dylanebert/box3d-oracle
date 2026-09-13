@@ -738,7 +738,7 @@ function scenarioMigration(workspace: string, bundle: string, reportPath: string
 }
 
 function scenarioMembership(workspace: string): void {
-  const corpus = JSON.parse(readFileSync(join(resolve(workspace), "projects", "box3d-oracle", "scenarios", "v1.json"), "utf8")) as { scenarios?: Array<{ id?: string; name?: string }> };
+  const corpus = JSON.parse(readFileSync(join(resolve(workspace), "projects", "box3d-oracle", "scenarios", "v2.json"), "utf8")) as { scenarios?: Array<{ id?: string; name?: string }> };
   if (!corpus.scenarios || corpus.scenarios.length !== 53) throw new OracleError("scenario membership is not exactly 53");
   const ids = new Set(corpus.scenarios.map((item) => item.id)); const names = new Set(corpus.scenarios.map((item) => item.name));
   if (ids.size !== 53 || names.size !== 53 || JSON.stringify(corpus.scenarios.map((item) => item.name)) !== JSON.stringify(SCENARIO_NAMES)) throw new OracleError("scenario membership order or uniqueness differs from S1");
