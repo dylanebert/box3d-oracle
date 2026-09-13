@@ -9,7 +9,11 @@ int main(int argc, char** argv)
     FILE* out = fopen(argv[1], "wb");
     if (!out) { perror(argv[1]); return 2; }
     bool first = true;
+#ifdef BOX3D_SCENARIO_V2
+    fputs("{\"schema\":\"shallot-physics-scenario/v2\",\"cases\":[", out);
+#else
     fputs("{\"schema\":\"shallot-physics-scenario/v1\",\"cases\":[", out);
+#endif
     oracle_write_scenarios(out, &first);
     fputs("]}\n", out);
     fclose(out);

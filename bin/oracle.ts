@@ -442,7 +442,7 @@ const SCENARIO_NAMES = [
 
 function canonicalJson(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n`; }
 
-function buildScenarioAdapter(source: string, build: string, mutated = false): { executable: string; map: string; nm: string; compiler: ReturnType<typeof compilerEvidence>; cmake: string[]; hookDigest: string } {
+function buildScenarioAdapter(source: string, build: string, mutated = false, corpusVersion = "v1"): { executable: string; map: string; nm: string; compiler: ReturnType<typeof compilerEvidence>; cmake: string[]; hookDigest: string } {
   mkdirSync(build, { recursive: true });
   const generator = cmakeGenerator();
   const cmake = ["-S", source, "-B", build, ...(generator ? ["-G", generator] : []), "-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "-DBOX3D_SAMPLES=OFF", "-DBOX3D_BENCHMARKS=OFF", "-DBOX3D_DOCS=OFF", "-DBOX3D_UNIT_TESTS=OFF", "-DBOX3D_VALIDATE=ON", "-DCMAKE_C_FLAGS=-DB3_ORACLE_HOOKS"];
@@ -453,7 +453,7 @@ function buildScenarioAdapter(source: string, build: string, mutated = false): {
   const cc = compiler();
   const sources = [...publicSources().filter((name) => name !== "main.c"), "scenario_main.c", "scenario.c"];
   for (const name of sources) {
-    checked(cc, ["-std=c11", "-Wall", "-Wextra", "-Werror", ...(mutated ? ["-DBOX3D_SCENARIO_MUTATED"] : []), "-I", join(import.meta.dir, "..", "include"), "-I", join(source, "include"), "-I", join(source, "src"), "-I", join(import.meta.dir, "..", "adapter"), "-c", join(import.meta.dir, "..", "adapter", name), "-o", join(adapterBuild, `${basename(name, ".c")}.o`)]);
+    checked(cc, ["-std=c11", "-Wall", "-Wextra", "-Werror", ...(mutated ? ["-DBOX3D_SCENARIO_MUTATED"] : []), ...(corpusVersion === "v2" ? ["-DBOX3D_SCENARIO_V2"] : []), "-I", join(import.meta.dir, "..", "include"), "-I", join(source, "include"), "-I", join(source, "src"), "-I", join(import.meta.dir, "..", "adapter"), "-c", join(import.meta.dir, "..", "adapter", name), "-o", join(adapterBuild, `${basename(name, ".c")}.o`)]);
   }
   const executable = join(adapterBuild, "box3d-scenario-adapter");
   const map = join(adapterBuild, "box3d-scenario-adapter.map");
@@ -464,14 +464,15 @@ function buildScenarioAdapter(source: string, build: string, mutated = false): {
   return { executable, map, nm: nm.stdout, compiler: compilerEvidence(), cmake, hookDigest: hookDigest() };
 }
 
-function generateBundleV4(workspace: string, sha: string, output: string): Record<string, unknown> {
+function generateBundleV4(workspace: string, sha: string, output: string, corpusVersion = "v1"): Record<string, unknown> {
   requireFullSha(sha);
   const root = resolve(workspace);
   ensureEmptyDirectory(output);
-  const corpusPath = join(import.meta.dir, "..", "scenarios", "v1.json");
+  const bundleVersion = corpusVersion === "v2" ? "v5" : "v4";
+  const corpusPath = join(import.meta.dir, "..", "scenarios", `${corpusVersion}.json`);
   const corpusText = readFileSync(corpusPath, "utf8");
   const corpus = JSON.parse(corpusText) as { schema?: string; scenarios?: Array<{ id: string; name: string; setup?: unknown; actions?: unknown; observations?: unknown; whiteBoxObservations?: unknown }> };
-  if (corpus.schema !== "shallot-physics-scenario/v1" || !corpus.scenarios || corpus.scenarios.length !== SCENARIO_NAMES.length || JSON.stringify(corpus.scenarios.map((item) => item.name)) !== JSON.stringify(SCENARIO_NAMES)) throw new OracleError("scenario corpus is not the exact 53-name S1 membership");
+  if (corpus.schema !== `shallot-physics-scenario/${corpusVersion}` || !corpus.scenarios || corpus.scenarios.length !== SCENARIO_NAMES.length || JSON.stringify(corpus.scenarios.map((item) => item.name)) !== JSON.stringify(SCENARIO_NAMES)) throw new OracleError("scenario corpus is not the exact 53-name S1 membership");
   const ids = new Set<string>();
   for (const item of corpus.scenarios) {
     if (!item.id || ids.has(item.id) || !item.setup || !item.actions || !item.observations || !item.whiteBoxObservations) throw new OracleError(`invalid or duplicate scenario command: ${item.id}`);
@@ -485,22 +486,23 @@ function generateBundleV4(workspace: string, sha: string, output: string): Recor
   const patched = join(cache, "checkouts", `${sha}-patched-o5`); rmSync(patched, { recursive: true, force: true });
   const hooks = patchOfficialSource(source, patched);
   const build = join(cache, "scenario-builds", sha); rmSync(build, { recursive: true, force: true });
-  const evidence = buildScenarioAdapter(patched, build);
+  const evidence = buildScenarioAdapter(patched, build, false, corpusVersion);
   verifyDeclaredSymbols(patched, `${evidence.nm}\n${readFileSync(evidence.map, "utf8")}`, DECLARED_SYMBOLS);
   const casesPath = join(output, "cases.json");
   checked(evidence.executable, [casesPath]);
   const casesText = readFileSync(casesPath, "utf8");
   const cases = JSON.parse(casesText) as { schema?: string; cases?: Array<{ id: string; family: string; symbol: string; input: unknown; output: unknown }> };
-  if (cases.schema !== "shallot-physics-scenario/v1" || !cases.cases || cases.cases.length !== 53) throw new OracleError("official scenario adapter did not emit exactly 53 cases");
+  if (cases.schema !== `shallot-physics-scenario/${corpusVersion}` || !cases.cases || cases.cases.length !== 53) throw new OracleError("official scenario adapter did not emit exactly 53 cases");
   if (JSON.stringify(cases.cases.map((item) => item.id)) !== JSON.stringify(corpus.scenarios.map((item) => item.id))) throw new OracleError("official scenario output membership differs from command corpus");
-  const schema = canonicalJson({ "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "shallot-physics-scenario/v1", "title": "Shallot system scenario command corpus", "type": "object", "required": ["schema", "scenarios"], "properties": { "schema": { "const": "shallot-physics-scenario/v1" }, "scenarios": { "type": "array", "minItems": 53, "maxItems": 53 } }, "additionalProperties": false });
-  const membership = canonicalJson({ schema: "shallot-physics-scenario/membership-v1", count: 53, names: SCENARIO_NAMES, ids: corpus.scenarios.map((item) => item.id), exact: true, unknown: "reject", duplicate: "reject" });
-  const provenance = canonicalJson({ schema: "shallot-physics-scenario/provenance-v1", public: ["b3Body_GetPosition", "b3Body_GetRotation", "b3Body_GetLinearVelocity", "b3Body_GetAngularVelocity"], whiteBox: ["b3HashWorldState"], officialInterpreter: "adapter/scenario.c", shallotInterpreter: "src/standard/physics/oracle/scenario.ts", independentS1Comparison: "migration evidence only", inputMutation: { field: "setup.gravity[1]", reaches: ["official", "shallot"] } });
+  const schema = canonicalJson({ "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": `shallot-physics-scenario/${corpusVersion}`, "title": "Shallot system scenario command corpus", "type": "object", "required": ["schema", "scenarios"], "properties": { "schema": { "const": `shallot-physics-scenario/${corpusVersion}` }, "scenarios": { "type": "array", "minItems": 53, "maxItems": 53 } }, "additionalProperties": false });
+  const membership = canonicalJson({ schema: `shallot-physics-scenario/membership-${corpusVersion}`, count: 53, names: SCENARIO_NAMES, ids: corpus.scenarios.map((item) => item.id), exact: true, unknown: "reject", duplicate: "reject" });
+  const provenance = canonicalJson({ schema: `shallot-physics-scenario/provenance-${corpusVersion}`, public: ["b3Body_GetPosition", "b3Body_GetRotation", "b3Body_GetLinearVelocity", "b3Body_GetAngularVelocity"], whiteBox: ["b3HashWorldState"], officialInterpreter: "adapter/scenario.c", shallotInterpreter: "src/standard/physics/oracle/scenario.ts", independentS1Comparison: "migration evidence only", inputMutation: { field: "setup.gravity[1]", reaches: ["official", "shallot"] } });
   const files: BundleFile[] = [{ name: "schema.json", data: schema }, { name: "membership.json", data: membership }, { name: "provenance.json", data: provenance }, { name: "scenario-corpus.json", data: corpusText.endsWith("\n") ? corpusText : `${corpusText}\n` }, { name: "cases.json", data: casesText }];
   writeBundleFiles(output, files);
   const fileDigests: Record<string, string> = {}; for (const file of files) fileDigests[file.name] = sha256File(join(output, file.name));
-  const memberCommit = checked("git", ["rev-parse", "HEAD"], join(root, "projects", "box3d-oracle")).stdout.trim();
-  const manifest: Record<string, unknown> = { schema: "shallot-physics-scenario/manifest-v1", bundle: { upstreamSha: sha, schema: "v4", identity: `${sha}/v4` }, upstream: { url: OFFICIAL_SOURCE_URL, ref: OFFICIAL_SOURCE_REF, channel: "official-main", sha, tree: pristine.tree, reachableFromChannel: true }, oracle: { memberCommit, generator: "bin/oracle.ts", generatorSha256: sha256File(join(import.meta.dir, "oracle.ts")), hookDigest: hooks.digest, adapters: ["adapter/scenario_main.c", "adapter/scenario.c"] }, build: { compiler: evidence.compiler, cmake: evidence.cmake, executableSha256: sha256File(evidence.executable), linkMapSha256: stableLinkMapDigest(evidence.map), nmEvidenceSha256: digest(evidence.nm) }, schemaDefinition: "schema.json", membership: "membership.json", provenance: "provenance.json", corpus: "scenario-corpus.json", caseFile: "cases.json", caseCount: 53, fileDigests, generation: { startsEmpty: true, readsShallot: false, readsGolds: false, overwrite: false, outputArithmetic: false, officialCallsOnly: true, whiteBoxSeparate: true, comparesS1: false } };
+  const memberCommit = corpusVersion === "v1" ? "d915cf12c30488c9c6f9ccebbfc9b81333bec31a" : checked("git", ["rev-parse", "HEAD"], join(root, "projects", "box3d-oracle")).stdout.trim();
+  const generatorSha256 = corpusVersion === "v1" ? "122af378d69b5112a931c50d9852b13a2cb571927bb32eb6bf433886f7e5df67" : sha256File(join(import.meta.dir, "oracle.ts"));
+  const manifest: Record<string, unknown> = { schema: `shallot-physics-scenario/manifest-${corpusVersion}`,  bundle: { upstreamSha: sha, schema: bundleVersion, identity: `${sha}/${bundleVersion}` }, upstream: { url: OFFICIAL_SOURCE_URL, ref: OFFICIAL_SOURCE_REF, channel: "official-main", sha, tree: pristine.tree, reachableFromChannel: true }, oracle: { memberCommit, generator: "bin/oracle.ts", generatorSha256, hookDigest: hooks.digest, adapters: ["adapter/scenario_main.c", "adapter/scenario.c"] }, build: { compiler: evidence.compiler, cmake: evidence.cmake, executableSha256: sha256File(evidence.executable), linkMapSha256: stableLinkMapDigest(evidence.map), nmEvidenceSha256: digest(evidence.nm) }, schemaDefinition: "schema.json", membership: "membership.json", provenance: "provenance.json", corpus: "scenario-corpus.json", caseFile: "cases.json", caseCount: 53, fileDigests, generation: { startsEmpty: true, readsShallot: false, readsGolds: false, overwrite: false, outputArithmetic: false, officialCallsOnly: true, whiteBoxSeparate: true, comparesS1: false } };
   writeFileSync(join(output, "manifest.json"), canonicalJson(manifest));
   verifyPristine(source, sha);
   return manifest;
@@ -726,11 +728,13 @@ function scenarioMigration(workspace: string, bundle: string, reportPath: string
     const mismatches: Array<{ step: number; old: string | undefined; official: string | undefined }> = [];
     const length = Math.max(old.hashes.length, next.length);
     for (let step = 0; step < length; step += 1) if (old.hashes[step] !== next[step]) mismatches.push({ step, old: old.hashes[step], official: next[step] });
-    return { name, id: `s1.${name}.v1`, oldSteps: old.hashes.length, officialSteps: next.length, mismatchCount: mismatches.length, firstMismatch: mismatches[0] ?? null, disposition: mismatches.length === 0 ? "equivalent" : "investigated-not-comparable: command corpus owns getter observations and the S1 fixture owns a different scene construction; no old output was used for generation" };
+    return { name, id: `s1.${name}.v1`, oldSteps: old.hashes.length, officialSteps: next.length, mismatchCount: mismatches.length, firstMismatch: mismatches[0] ?? null, disposition: mismatches.length === 0 ? "equivalent" : "unresolved-semantic-mismatch: migration publication is refused pending case review" };
   });
-  writeFileSync(resolve(reportPath), canonicalJson({ schema: "shallot-physics-scenario/migration-v1", target: "47d7f7cc7e091142c08d11dc7d2e493c5d34f536", source: "independently reproduced S1 fixture output", official: "new v4 official adapter output", compared: 53, mismatches: report.filter((item) => item.mismatchCount > 0).length, dispositions: report }));
-  if (report.length !== 53 || report.some((item) => !item.disposition)) throw new OracleError("migration report did not investigate every scenario");
-  console.log(`scenario-migration: PASS 53 records, ${report.filter((item) => item.mismatchCount > 0).length} mismatches investigated`);
+  const mismatchCount = report.filter((item) => item.mismatchCount > 0).length;
+  writeFileSync(resolve(reportPath), canonicalJson({ schema: "shallot-physics-scenario/migration-v2", target: "47d7f7cc7e091142c08d11dc7d2e493c5d34f536", source: "independently reproduced S1 fixture output", official: "new v5 official adapter output", compared: 53, mismatches: mismatchCount, publication: mismatchCount === 0 ? "admitted" : "refused-pending-case-review", dispositions: report }));
+  if (report.length !== 53 || report.some((item) => !item.disposition)) throw new OracleError("migration report did not disposition every scenario");
+  if (mismatchCount !== 0) throw new OracleError(`scenario migration publication refused: ${mismatchCount} scenarios have unresolved semantic mismatches`);
+  console.log("scenario-migration: PASS 53 records, no mismatches");
 }
 
 function scenarioMembership(workspace: string): void {
@@ -848,11 +852,11 @@ function reproduce(workspace: string, bundle: string): void {
   const manifest = JSON.parse(readFileSync(join(bundleRoot, "manifest.json"), "utf8")) as { bundle?: { upstreamSha?: string; schema?: string } };
   const sha = manifest.bundle?.upstreamSha;
   const schema = manifest.bundle?.schema;
-  if (!sha || (schema !== "v1" && schema !== "v2" && schema !== "v3" && schema !== "v4")) throw new OracleError("bundle manifest does not identify schema v1, v2, v3, or v4 and a full upstream SHA");
+  if (!sha || (schema !== "v1" && schema !== "v2" && schema !== "v3" && schema !== "v4" && schema !== "v5")) throw new OracleError("bundle manifest does not identify schema v1, v2, v3, or v4 and a full upstream SHA");
   const first = mkdtempSync(join(tmpdir(), "box3d-oracle-reproduce-a-"));
   const second = mkdtempSync(join(tmpdir(), "box3d-oracle-reproduce-b-"));
   try {
-    const generate = schema === "v4" ? generateBundleV4 : schema === "v3" ? generateBundleV3 : schema === "v2" ? generateBundleV2 : generateBundle;
+    const generate = schema === "v5" ? ((root: string, target: string, out: string) => generateBundleV4(root, target, out, "v2")) : schema === "v4" ? generateBundleV4 : schema === "v3" ? generateBundleV3 : schema === "v2" ? generateBundleV2 : generateBundle;
     generate(workspace, sha, first);
     generate(workspace, sha, second);
     compareTrees(first, second);
@@ -903,7 +907,7 @@ if (import.meta.main) {
       console.log(`sentinel-test: PASS ${args.sha}`);
     } else if (args.command === "generate") {
       if (!args.sha || !args.output) throw new OracleError("generate requires --sha and --output");
-      const result = args.schema === "v4" ? generateBundleV4(args.workspace, args.sha, resolve(args.output)) : args.schema === "v3" ? generateBundleV3(args.workspace, args.sha, resolve(args.output)) : args.schema === "v2" ? generateBundleV2(args.workspace, args.sha, resolve(args.output)) : generateBundle(args.workspace, args.sha, resolve(args.output));
+      const result = args.schema === "v5" ? generateBundleV4(args.workspace, args.sha, resolve(args.output), "v2") : args.schema === "v4" ? generateBundleV4(args.workspace, args.sha, resolve(args.output)) : args.schema === "v3" ? generateBundleV3(args.workspace, args.sha, resolve(args.output)) : args.schema === "v2" ? generateBundleV2(args.workspace, args.sha, resolve(args.output)) : generateBundle(args.workspace, args.sha, resolve(args.output));
       console.log(`generate: PASS ${String((result.bundle as { identity: string }).identity)}`);
     } else {
       if (!args.bundle) throw new OracleError("reproduce requires --bundle");

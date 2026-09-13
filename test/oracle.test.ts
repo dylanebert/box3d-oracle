@@ -105,6 +105,17 @@ test("scenario membership is an exact 53-name join with owned setup and observat
   }
 });
 
+test("faithful v2 scenario inputs name their legacy builders and carry no expected observations", () => {
+  const corpus = JSON.parse(readFileSync(join(import.meta.dir, "..", "scenarios", "v2.json"), "utf8")) as { scenarios: Array<{ setup: { legacyBuilder?: string; fixtureInput?: unknown; authoringSource?: string }; actions: unknown; observations: unknown }> };
+  expect(corpus.scenarios).toHaveLength(53);
+  for (const item of corpus.scenarios) {
+    expect(item.setup.legacyBuilder).toBeTruthy();
+    expect(item.setup.fixtureInput).toBeDefined();
+    expect(item.setup.authoringSource).toContain("step.fixture.ts");
+    expect(JSON.stringify(item)).not.toContain("expected");
+  }
+});
+
 test("scenario mutation is named at the shared gravity input and is not an expected-value edit", () => {
   const source = readFileSync(join(import.meta.dir, "..", "scenarios", "v1.json"), "utf8");
   expect(source).toContain('"gravity"');
