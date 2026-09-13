@@ -7,6 +7,7 @@
     "test": "bun test test/oracle.test.ts",
     "upstream-test": "bun bin/oracle.ts upstream-test",
     "generate": "bun bin/oracle.ts generate",
-    "reproduce": "bun bin/oracle.ts reproduce"
+    "reproduce": "bun bin/oracle.ts reproduce",
+    "scenario-migrate": "bun bin/oracle.ts scenario-migrate"
   }
 }

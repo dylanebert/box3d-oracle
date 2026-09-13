@@ -22,7 +22,7 @@ export const PATCHES: OraclePatch[] = [
     file: "src/recording.c",
     marker: "recording.hash-world-state.bridge",
     anchor: "\treturn hash;\n}\n",
-    addition: "\treturn hash;\n}\n#ifdef B3_ORACLE_HOOKS\nuint64_t b3OracleCallHashWorldState( b3World* world )\n{\n\treturn b3HashWorldState( world );\n}\n#endif\n",
+    addition: "\treturn hash;\n}\n#ifdef B3_ORACLE_HOOKS\nuint64_t b3OracleCallHashWorldState( b3World* world )\n{\n\treturn b3HashWorldState( world );\n}\nuint64_t b3OracleCallHashWorldStateId( b3WorldId worldId )\n{\n\treturn b3HashWorldState( b3GetWorld( worldId.index1 - 1 ) );\n}\n#endif\n",
   },
   {
     file: "src/solver.c",

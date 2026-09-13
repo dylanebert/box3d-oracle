@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "box3d-oracle/scenario-command/v1",
+  "title": "Box3D scenario command corpus",
+  "type": "object",
+  "required": ["schema", "corpusVersion", "scenarios"],
+  "properties": {
+    "schema": { "const": "box3d-oracle/scenario-command/v1" },
+    "corpusVersion": { "const": 1 },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "commands", "stepCount"],
+        "properties": {
+          "id": { "pattern": "^s1\\.[a-z0-9-]+\\.v1$" },
+          "name": { "type": "string" },
+          "stepCount": { "type": "integer", "minimum": 1 },
+          "commands": { "type": "array", "minItems": 1 }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}
