@@ -737,7 +737,8 @@ function compareTrees(expected: string, actual: string, includeManifest = true):
 const FOUNDATION_SCENARIO_ROSTER = ["free-fall", "sphere-drop", "box-stack", "sphere-sleep", "box-sleep", "wake-drop", "split-slide"] as const;
 const JOINT_SCENARIO_ROSTER = ["revolute-dd", "revolute-pendulum", "revolute-motor", "revolute-limit", "revolute-chain", "weld-dd", "parallel", "joint-contacts", "motor", "motor-spring", "distance", "distance-spring", "prismatic", "prismatic-motor", "spherical", "spherical-limits", "spherical-motor", "wheel", "wheel-spin", "wheel-steer", "ragdoll"] as const;
 const SURFACE_SCENARIO_ROSTER = ["ccd-drop", "ccd-bullet", "mesh-box", "mesh-sphere", "mesh-capsule", "mesh-ccd", "height-box", "height-sphere", "height-capsule", "height-ccd"] as const;
-const SCENARIO_FAMILIES: Record<string, string[]> = { foundation: [...FOUNDATION_SCENARIO_ROSTER], joints: [...JOINT_SCENARIO_ROSTER], surfaces: [...SURFACE_SCENARIO_ROSTER], all: [...FOUNDATION_SCENARIO_ROSTER, ...JOINT_SCENARIO_ROSTER, ...SURFACE_SCENARIO_ROSTER] };
+const COMPOUND_SENSOR_SCENARIO_ROSTER = ["compound-hull", "compound-capsule", "compound-sphere", "compound-mesh", "compound-ccd", "sensor"] as const;
+const SCENARIO_FAMILIES: Record<string, string[]> = { foundation: [...FOUNDATION_SCENARIO_ROSTER], joints: [...JOINT_SCENARIO_ROSTER], surfaces: [...SURFACE_SCENARIO_ROSTER], "compound-sensor": [...COMPOUND_SENSOR_SCENARIO_ROSTER], all: [...FOUNDATION_SCENARIO_ROSTER, ...JOINT_SCENARIO_ROSTER, ...SURFACE_SCENARIO_ROSTER, ...COMPOUND_SENSOR_SCENARIO_ROSTER] };
 
 function legacyScenarioSource(cache: string, sha: string): string {
   requireFullSha(sha);
@@ -878,15 +879,16 @@ function scenarioMigrate(workspace: string, sha: string, legacySha: string, fami
   }
   const mutationCorpus = join(build, "mutation-commands-v1.json");
   const mutation = JSON.parse(readFileSync(corpus, "utf8")) as { scenarios: Array<{ name: string; commands: Array<Record<string, unknown>> }> };
-  const mutationTargetName = family === "joints" ? "revolute-motor" : family === "surfaces" ? "ccd-bullet" : "free-fall";
+  const mutationTargetName = family === "joints" ? "revolute-motor" : family === "surfaces" ? "ccd-bullet" : family === "compound-sensor" || family === "all" ? "compound-hull" : "free-fall";
   const mutationTargetIndex = mutation.scenarios.findIndex((scenario) => scenario.name === mutationTargetName);
   if (mutationTargetIndex < 0) throw new OracleError(`${mutationTargetName} mutation target is missing`);
   const mutationTarget = mutation.scenarios[mutationTargetIndex];
-  const mutationCommand = mutationTarget.commands.find((command) => family === "joints" ? command.op === "joint.revolute" : command.op === "body.create" && (family !== "surfaces" || command.id === "b2"));
+  const mutationCommand = mutationTarget.commands.find((command) => family === "joints" ? command.op === "joint.revolute" : family === "surfaces" ? command.op === "body.create" && command.id === "b2" : family === "compound-sensor" || family === "all" ? command.op === "resource.compound" : command.op === "body.create");
   if (!mutationCommand) throw new OracleError(`${mutationTargetName} mutation command is missing`);
-  const mutationDescription = family === "joints" ? "joint.revolute.motorSpeed" : family === "surfaces" ? "ccd-bullet.body.create.linearVelocity.x" : "body.create.angularVelocity";
+  const mutationDescription = family === "joints" ? "joint.revolute.motorSpeed" : family === "surfaces" ? "ccd-bullet.body.create.linearVelocity.x" : family === "compound-sensor" || family === "all" ? "compound-hull.first-child.transform.p.x" : "body.create.angularVelocity";
   if (family === "joints") mutationCommand.motorSpeed = "0x40a00000";
   else if (family === "surfaces") mutationCommand.linearVelocity = ["0x42c80000", "0x00000000", "0x00000000"];
+  else if (family === "compound-sensor" || family === "all") { const children = mutationCommand.hulls as Array<Record<string, unknown>>; const first = children?.[0]; if (!first) throw new OracleError("compound-hull first child is missing"); const transform = first.transform as Record<string, unknown>; (transform.p as string[])[0] = "0x3f800000"; }
   else mutationCommand.angularVelocity = ["0x40000000", "0x40a00000", "0x40000000"];
   writeFileSync(mutationCorpus, canonicalJson(mutation));
   const mutationBuild = join(cache, "scenario-builds", `${sha}-${family}-mutation`); rmSync(mutationBuild, { recursive: true, force: true }); mkdirSync(mutationBuild, { recursive: true });
@@ -894,7 +896,7 @@ function scenarioMigrate(workspace: string, sha: string, legacySha: string, fami
   const mutationEvidence = buildScenario(patched, mutationBuild, dirname(mutationTable));
   const baselineMutation = command(evidence.executable, ["--index", String(mutationTargetIndex)]); const changedMutation = command(mutationEvidence.executable, ["--index", String(mutationTargetIndex)]);
   if (baselineMutation.status !== 0 || changedMutation.status !== 0 || baselineMutation.stdout === changedMutation.stdout) mismatches += 1;
-  const report = { schema: "box3d-oracle/scenario-migration/v1", family, officialSha: sha, legacySha, roster: selected.map((item) => ({ id: item.id, name: item.name })), receipts, mutation: { command: mutationDescription, scenario: mutationTargetName, officialAdapterChanged: baselineMutation.stdout !== changedMutation.stdout, shallotAdapterChecked: family === "surfaces" ? "box3d-scenario-migration-surfaces" : family === "joints" ? "box3d-scenario-migration-joints" : "box3d-scenario-migration-foundation" }, mismatchCount: mismatches, publication: mismatches === 0 ? "accepted" : "refused" };
+  const report = { schema: "box3d-oracle/scenario-migration/v1", family, officialSha: sha, legacySha, roster: selected.map((item) => ({ id: item.id, name: item.name })), receipts, mutation: { command: mutationDescription, scenario: mutationTargetName, officialAdapterChanged: baselineMutation.stdout !== changedMutation.stdout, shallotAdapterChecked: family === "surfaces" ? "box3d-scenario-migration-surfaces" : family === "joints" ? "box3d-scenario-migration-joints" : family === "compound-sensor" || family === "all" ? "box3d-scenario-migration-compound-sensor" : "box3d-scenario-migration-foundation" }, mismatchCount: mismatches, publication: mismatches === 0 ? "accepted" : "refused" };
   writeFileSync(join(build, "scenario-migration.json"), canonicalJson(report));
   console.log(JSON.stringify(report, null, 2));
   if (mismatches !== 0) throw new OracleError(`scenario migration refused: ${mismatches} mismatches`);

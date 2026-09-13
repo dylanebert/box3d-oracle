@@ -31,6 +31,40 @@ static b3Transform xf(const ScenarioCommand* c, int offset) { return (b3Transfor
 #define E_SPIN 7
 #define E_STEERING 8
 #define E_STEERING_LIMIT 9
+#define SHAPE_SENSOR (UINT64_C(1) << 60)
+#define SHAPE_SENSOR_EVENTS (UINT64_C(1) << 59)
+
+static b3SurfaceMaterial make_material(const ScenarioMaterialData* source)
+{
+    b3SurfaceMaterial material = b3DefaultSurfaceMaterial();
+    material.friction = f32(source->friction); material.restitution = f32(source->restitution); material.rollingResistance = f32(source->rollingResistance);
+    material.tangentVelocity = (b3Vec3){ f32(source->tangentVelocity[0]), f32(source->tangentVelocity[1]), f32(source->tangentVelocity[2]) };
+    material.userMaterialId = source->userMaterialId; material.customColor = source->customColor;
+    return material;
+}
+
+static b3Transform child_transform(const ScenarioCompoundChild* child)
+{
+    return (b3Transform){ .p = (b3Vec3){ f32(child->transform[0]), f32(child->transform[1]), f32(child->transform[2]) }, .q = (b3Quat){ .v = (b3Vec3){ f32(child->transform[3]), f32(child->transform[4]), f32(child->transform[5]) }, .s = f32(child->transform[6]) } };
+}
+
+static b3CompoundData* make_compound(const ScenarioCompoundData* source, b3BoxHull* boxes, b3Sphere* spheres, b3Capsule* capsules, b3MeshData** meshes)
+{
+    b3CompoundDef def = { 0 }; b3CompoundCapsuleDef* capsuleDefs = NULL; b3CompoundHullDef* hullDefs = NULL; b3CompoundMeshDef* meshDefs = NULL; b3CompoundSphereDef* sphereDefs = NULL;
+    if (source->capsuleCount) capsuleDefs = calloc((size_t)source->capsuleCount, sizeof(*capsuleDefs));
+    if (source->hullCount) hullDefs = calloc((size_t)source->hullCount, sizeof(*hullDefs));
+    if (source->meshCount) meshDefs = calloc((size_t)source->meshCount, sizeof(*meshDefs));
+    if (source->sphereCount) sphereDefs = calloc((size_t)source->sphereCount, sizeof(*sphereDefs));
+    if ((source->capsuleCount && !capsuleDefs) || (source->hullCount && !hullDefs) || (source->meshCount && !meshDefs) || (source->sphereCount && !sphereDefs)) { free(capsuleDefs); free(hullDefs); free(meshDefs); free(sphereDefs); return NULL; }
+    for (int i = 0; i < source->capsuleCount; ++i) { const ScenarioCompoundChild* c = source->capsules + i; capsuleDefs[i].capsule = capsules[c->resource]; capsuleDefs[i].material = make_material(c->materials); }
+    for (int i = 0; i < source->hullCount; ++i) { const ScenarioCompoundChild* c = source->hulls + i; hullDefs[i].hull = &boxes[c->resource].base; hullDefs[i].transform = child_transform(c); hullDefs[i].material = make_material(c->materials); }
+    for (int i = 0; i < source->meshCount; ++i) { const ScenarioCompoundChild* c = source->meshes + i; meshDefs[i].meshData = meshes[c->resource]; meshDefs[i].transform = child_transform(c); meshDefs[i].scale = (b3Vec3){ f32(c->scale[0]), f32(c->scale[1]), f32(c->scale[2]) }; b3SurfaceMaterial* materials = calloc((size_t)c->materialCount, sizeof(*materials)); if (!materials) { free(capsuleDefs); free(hullDefs); free(meshDefs); free(sphereDefs); return NULL; } for (int j = 0; j < c->materialCount; ++j) materials[j] = make_material(c->materials + j); meshDefs[i].materials = materials; meshDefs[i].materialCount = c->materialCount; }
+    for (int i = 0; i < source->sphereCount; ++i) { const ScenarioCompoundChild* c = source->spheres + i; sphereDefs[i].sphere = spheres[c->resource]; sphereDefs[i].material = make_material(c->materials); }
+    def.capsules = capsuleDefs; def.capsuleCount = source->capsuleCount; def.hulls = hullDefs; def.hullCount = source->hullCount; def.meshes = meshDefs; def.meshCount = source->meshCount; def.spheres = sphereDefs; def.sphereCount = source->sphereCount;
+    b3CompoundData* result = b3CreateCompound(&def);
+    for (int i = 0; i < source->meshCount; ++i) free((void*)meshDefs[i].materials);
+    free(capsuleDefs); free(hullDefs); free(meshDefs); free(sphereDefs); return result;
+}
 
 static b3MeshData* make_mesh(const ScenarioMeshData* source)
 {
@@ -81,30 +115,35 @@ static int create_joint(const ScenarioCommand* c, b3WorldId world, b3BodyId* bod
     }
 }
 
+static int same_shape(b3ShapeId a, b3ShapeId b) { return a.index1 == b.index1 && a.world0 == b.world0 && a.generation == b.generation; }
+static void shape_label(FILE* out, b3ShapeId id, b3ShapeId* shapes) { for (int i = 0; i < 128; ++i) if (same_shape(id, shapes[i])) { fprintf(out, "s%d", i); return; } fputs("unknown", out); }
+
 static int run_scenario(int index, FILE* out)
 {
     if (index < 0 || index >= scenario_record_count) return 2;
-    const ScenarioRecord* record = scenario_records + index; b3WorldId world = b3_nullWorldId; b3BodyId bodies[128] = { 0 }; b3BoxHull boxes[128]; b3Sphere spheres[128]; b3Capsule capsules[128]; b3MeshData* meshes[128] = { 0 }; b3HeightFieldData* heightFields[128] = { 0 }; int jointCount = 0; int observations = 0; FILE* observationOutput = tmpfile(); FILE* hashOutput = tmpfile();
-    if (!observationOutput || !hashOutput) return 2;
+    const ScenarioRecord* record = scenario_records + index; b3WorldId world = b3_nullWorldId; b3BodyId bodies[128] = { 0 }; b3ShapeId shapes[128] = { 0 }; b3BoxHull boxes[128]; b3Sphere spheres[128]; b3Capsule capsules[128]; b3MeshData* meshes[128] = { 0 }; b3HeightFieldData* heightFields[128] = { 0 }; int jointCount = 0; int observations = 0; int eventObservations = 0; FILE* observationOutput = tmpfile(); FILE* hashOutput = tmpfile(); FILE* eventOutput = tmpfile();
+    if (!observationOutput || !hashOutput || !eventOutput) return 2;
     for (int i = 0; i < record->commandCount; ++i) {
         const ScenarioCommand* c = record->commands + i;
         switch (c->op) {
         case SCENARIO_WORLD: { b3WorldDef d = b3DefaultWorldDef(); d.gravity = v3(c, 0); d.enableSleep = (c->flags & (UINT64_C(1) << 62)) != 0; d.enableContinuous = (c->flags & (UINT64_C(1) << 63)) != 0; d.workerCount = 1; world = b3CreateWorld(&d); break; }
         case SCENARIO_BODY: { if (!B3_IS_NON_NULL(world) || c->a < 0 || c->a >= 128) return 2; b3BodyDef d = b3DefaultBodyDef(); d.type = (b3BodyType)c->kind; d.position = (b3Pos){ f32(c->values[0]), f32(c->values[1]), f32(c->values[2]) }; d.rotation = q4(c, 3); d.linearVelocity = v3(c, 7); d.angularVelocity = v3(c, 10); d.linearDamping = f32(c->values[13]); d.angularDamping = f32(c->values[14]); d.isBullet = HAS(c, 61); bodies[c->a] = b3CreateBody(world, &d); break; }
         case SCENARIO_BOX_RESOURCE: boxes[c->a] = b3MakeBoxHull(f32(c->values[0]), f32(c->values[1]), f32(c->values[2])); break;
-        case SCENARIO_SPHERE_RESOURCE: spheres[c->a] = (b3Sphere){ { 0, 0, 0 }, f32(c->values[0]) }; break;
+        case SCENARIO_SPHERE_RESOURCE: spheres[c->a] = (b3Sphere){ v3(c, 0), f32(c->values[3]) }; break;
         case SCENARIO_CAPSULE_RESOURCE: capsules[c->a] = (b3Capsule){ v3(c, 0), v3(c, 3), f32(c->values[6]) }; break;
         case SCENARIO_MESH_RESOURCE: if (c->mesh == NULL || c->a < 0 || c->a >= 128 || (meshes[c->a] = make_mesh(c->mesh)) == NULL) return 2; break;
         case SCENARIO_HEIGHT_RESOURCE: if (c->heightField == NULL || c->a < 0 || c->a >= 128 || (heightFields[c->a] = make_height_field(c->heightField)) == NULL) return 2; break;
-        case SCENARIO_SHAPE: { if (!b3Body_IsValid(bodies[c->b])) return 2; b3ShapeDef d = b3DefaultShapeDef(); d.baseMaterial.rollingResistance = f32(c->values[1]); d.filter.groupIndex = (int)c->values[2]; int resource = (int)c->values[0]; if (c->kind == 1) b3CreateHullShape(bodies[c->b], &d, &boxes[resource].base); else if (c->kind == 2) b3CreateSphereShape(bodies[c->b], &d, &spheres[resource]); else if (c->kind == 3) b3CreateCapsuleShape(bodies[c->b], &d, &capsules[resource]); else if (c->kind == 4) b3CreateMeshShape(bodies[c->b], &d, meshes[resource], v3(c, 3)); else if (c->kind == 5) b3CreateHeightFieldShape(bodies[c->b], &d, heightFields[resource]); else return 2; break; }
+        case SCENARIO_COMPOUND_RESOURCE: break;
+        case SCENARIO_SHAPE: { if (!b3Body_IsValid(bodies[c->b])) return 2; b3ShapeDef d = b3DefaultShapeDef(); d.baseMaterial.rollingResistance = f32(c->values[1]); d.filter.groupIndex = (int)c->values[2]; d.isSensor = (c->flags & SHAPE_SENSOR) != 0; d.enableSensorEvents = (c->flags & SHAPE_SENSOR_EVENTS) != 0; int resource = (int)c->values[0]; if (c->kind == 1) shapes[c->a] = b3CreateHullShape(bodies[c->b], &d, &boxes[resource].base); else if (c->kind == 2) shapes[c->a] = b3CreateSphereShape(bodies[c->b], &d, &spheres[resource]); else if (c->kind == 3) shapes[c->a] = b3CreateCapsuleShape(bodies[c->b], &d, &capsules[resource]); else if (c->kind == 4) shapes[c->a] = b3CreateMeshShape(bodies[c->b], &d, meshes[resource], v3(c, 3)); else if (c->kind == 5) shapes[c->a] = b3CreateHeightFieldShape(bodies[c->b], &d, heightFields[resource]); else if (c->kind == 6 && c->compound != NULL) { b3CompoundData* compound = make_compound(c->compound, boxes, spheres, capsules, meshes); if (!compound) return 2; shapes[c->a] = b3CreateBakedCompoundShape(bodies[c->b], &d, compound); b3DestroyCompound(compound); } else return 2; if (!b3Shape_IsValid(shapes[c->a])) return 2; break; }
         case SCENARIO_REVOLUTE: case SCENARIO_WELD: case SCENARIO_PARALLEL: case SCENARIO_MOTOR: case SCENARIO_DISTANCE: case SCENARIO_PRISMATIC: case SCENARIO_SPHERICAL: case SCENARIO_WHEEL: if (!B3_IS_NON_NULL(world) || !create_joint(c, world, bodies)) return 2; jointCount++; break;
         case SCENARIO_STEP: if (!B3_IS_NON_NULL(world)) return 2; b3World_Step(world, f32(c->values[0]), c->substeps); break;
         case SCENARIO_OBSERVE: { if (!B3_IS_NON_NULL(world)) return 2; if (observations) fputc(',', observationOutput); fprintf(observationOutput, "{\"step\":%d,\"bodies\":[", c->step); for (int j = 0; j < c->bodyCount; ++j) { if (j) fputc(',', observationOutput); if (c->bodies[j] < 0 || c->bodies[j] >= 128 || !b3Body_IsValid(bodies[c->bodies[j]])) return 2; b3WorldTransform t = b3Body_GetTransform(bodies[c->bodies[j]]); fprintf(observationOutput, "{\"id\":\"b%d\",\"p\":", c->bodies[j]); pos(observationOutput, t.p); fputs(",\"q\":[", observationOutput); hex32(observationOutput, bits(t.q.v.x)); fputc(',', observationOutput); hex32(observationOutput, bits(t.q.v.y)); fputc(',', observationOutput); hex32(observationOutput, bits(t.q.v.z)); fputc(',', observationOutput); hex32(observationOutput, bits(t.q.s)); fputs("],\"v\":", observationOutput); vec3(observationOutput, b3Body_GetLinearVelocity(bodies[c->bodies[j]])); fputs(",\"w\":", observationOutput); vec3(observationOutput, b3Body_GetAngularVelocity(bodies[c->bodies[j]])); fputc('}', observationOutput); } fputs("],\"receiptId\":\"", observationOutput); fputs(c->id, observationOutput); fputs("\"}", observationOutput); observations++; break; }
         case SCENARIO_HASH: { if (!B3_IS_NON_NULL(world) || observations == 0) return 2; if (observations > 1) fputc(',', hashOutput); fprintf(hashOutput, "{\"step\":%d,\"value\":", c->step); hex64(hashOutput, b3OracleCallHashWorldStateId(world)); fprintf(hashOutput, ",\"receiptId\":\"%s\"}", c->id); break; }
+        case SCENARIO_SENSOR_EVENTS: { if (!B3_IS_NON_NULL(world) || c->a < 0 || c->a >= 128 || !b3Shape_IsValid(shapes[c->a]) || !b3Shape_IsSensor(shapes[c->a])) return 2; b3SensorEvents events = b3World_GetSensorEvents(world); if (eventObservations++) fputc(',', eventOutput); fprintf(eventOutput, "{\"step\":%d,\"begin\":[", c->step); int first = 1; for (int j = 0; j < events.beginCount; ++j) if (same_shape(events.beginEvents[j].sensorShapeId, shapes[c->a])) { if (!first) fputc(',', eventOutput); first = 0; fputs("{\"sensor\":\"", eventOutput); shape_label(eventOutput, events.beginEvents[j].sensorShapeId, shapes); fputs("\",\"visitor\":\"", eventOutput); shape_label(eventOutput, events.beginEvents[j].visitorShapeId, shapes); fputs("\"}", eventOutput); } fputs("],\"end\":[", eventOutput); first = 1; for (int j = 0; j < events.endCount; ++j) if (same_shape(events.endEvents[j].sensorShapeId, shapes[c->a])) { if (!first) fputc(',', eventOutput); first = 0; fputs("{\"sensor\":\"", eventOutput); shape_label(eventOutput, events.endEvents[j].sensorShapeId, shapes); fputs("\",\"visitor\":\"", eventOutput); shape_label(eventOutput, events.endEvents[j].visitorShapeId, shapes); fputs("\"}", eventOutput); } fprintf(eventOutput, "],\"receiptId\":\"%s\"}", c->id); break; }
         default: return 2;
         }
     }
     if (jointCount != record->requiredJointCount) return 2;
-    fputs("{\"schema\":\"box3d-oracle/scenario-output/v1\",\"id\":\"", out); fputs(record->id, out); fputs("\",\"name\":\"", out); fputs(record->name, out); fprintf(out, "\",\"corpusDigest\":\"%s\",\"observations\":[", SCENARIO_CORPUS_DIGEST); copy_file(out, observationOutput); fprintf(out, "],\"hashes\":["); copy_file(out, hashOutput); fprintf(out, "],\"receipt\":{\"corpusDigest\":\"%s\",\"consumedCommands\":[", SCENARIO_CORPUS_DIGEST); for (int i = 0; i < record->commandCount; ++i) { if (i) fputc(',', out); fprintf(out, "\"%s\"", record->commands[i].id); } fputs("],\"observationIds\":[", out); int first = 1; for (int i = 0; i < record->commandCount; ++i) if (record->commands[i].op == SCENARIO_OBSERVE) { if (!first) fputc(',', out); first = 0; fprintf(out, "\"%s\"", record->commands[i].id); } fputs("]}}\n", out); if (B3_IS_NON_NULL(world)) b3DestroyWorld(world); for (int i = 0; i < 128; ++i) { if (meshes[i]) b3DestroyMesh(meshes[i]); if (heightFields[i]) b3DestroyHeightField(heightFields[i]); } fclose(observationOutput); fclose(hashOutput); return 0;
+    fputs("{\"schema\":\"box3d-oracle/scenario-output/v1\",\"id\":\"", out); fputs(record->id, out); fputs("\",\"name\":\"", out); fputs(record->name, out); fprintf(out, "\",\"corpusDigest\":\"%s\",\"observations\":[", SCENARIO_CORPUS_DIGEST); copy_file(out, observationOutput); fprintf(out, "],\"hashes\":["); copy_file(out, hashOutput); fprintf(out, "],\"sensorEvents\":["); copy_file(out, eventOutput); fprintf(out, "],\"receipt\":{\"corpusDigest\":\"%s\",\"consumedCommands\":[", SCENARIO_CORPUS_DIGEST); for (int i = 0; i < record->commandCount; ++i) { if (i) fputc(',', out); fprintf(out, "\"%s\"", record->commands[i].id); } fputs("],\"observationIds\":[", out); int first = 1; for (int i = 0; i < record->commandCount; ++i) if (record->commands[i].op == SCENARIO_OBSERVE) { if (!first) fputc(',', out); first = 0; fprintf(out, "\"%s\"", record->commands[i].id); } fputs("]}}\n", out); if (B3_IS_NON_NULL(world)) b3DestroyWorld(world); for (int i = 0; i < 128; ++i) { if (meshes[i]) b3DestroyMesh(meshes[i]); if (heightFields[i]) b3DestroyHeightField(heightFields[i]); } fclose(observationOutput); fclose(hashOutput); fclose(eventOutput); return 0;
 }
 int main(int argc, char** argv) { if (argc != 3 || strcmp(argv[1], "--index") != 0) return 2; char* end = NULL; long index = strtol(argv[2], &end, 10); if (end == argv[2] || *end) return 2; return run_scenario((int)index, stdout); }
