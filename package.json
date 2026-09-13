@@ -5,6 +5,8 @@
   "scripts": {
     "check": "bun bin/check.ts",
     "test": "bun test test/oracle.test.ts",
-    "upstream-test": "bun bin/oracle.ts upstream-test"
+    "upstream-test": "bun bin/oracle.ts upstream-test",
+    "generate": "bun bin/oracle.ts generate",
+    "reproduce": "bun bin/oracle.ts reproduce"
   }
 }

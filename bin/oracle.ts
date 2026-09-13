@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 export const OFFICIAL_SOURCE_URL = "https://github.com/erincatto/box3d.git";
@@ -246,34 +246,197 @@ export function upstreamTest(workspace: string, sha: string): { receiptPath: str
   return { receiptPath: writeReceipt(root, receipt, sha), receipt };
 }
 
-function parseArgs(args: string[]): { workspace: string; sha: string } {
-  if (args[0] !== "upstream-test") throw new OracleError("usage: oracle.ts upstream-test --workspace <kex-root> --sha <full-sha>");
-  let workspace = "";
-  let sha = "";
-  for (let index = 1; index < args.length; index += 1) {
-    const flag = args[index];
-    const value = args[index + 1];
-    if ((flag === "--workspace" || flag === "--sha") && value) {
-      if (flag === "--workspace") workspace = value;
-      else sha = value;
-      index += 1;
-    } else {
-      throw new OracleError(`unknown or incomplete argument: ${flag}`);
+type BundleFile = { name: string; data: string };
+const PUBLIC_SYMBOLS = {
+  math: ["b3Add", "b3Dot", "b3ComputeCosSin"],
+  geometry: ["b3ComputeSphereAABB", "b3ComputeCapsuleMass"],
+  distance: ["b3PointToSegmentDistance", "b3ShapeDistance"],
+  tree: ["b3DynamicTree_Query"],
+  manifold: ["b3CollideSpheres"],
+  query: ["b3RayCastSphere"],
+  mover: ["b3SolvePlanes", "b3ClipVector"],
+} as const;
+const DEFERRED_PRIVATE_CASES = [
+  "world-hash", "integrate", "finalize", "recycle", "convex-manifold", "mesh-contact", "convex-contact", "joint",
+] as const;
+
+function sha256File(path: string): string { return digest(readFileSync(path)); }
+function compiler(): string { return process.env.CC ?? "cc"; }
+function compilerEvidence(): { executable: string; version: string; sha256: string } {
+  const executable = compiler();
+  const version = checked(executable, ["--version"]).stdout.split("\n")[0];
+  return { executable, version, sha256: digest(version) };
+}
+function ensureEmptyDirectory(path: string): void {
+  mkdirSync(path, { recursive: true });
+  if (readdirSync(path).length !== 0) throw new OracleError(`bundle output must start empty: ${path}`);
+}
+function publicSources(): string[] {
+  return readdirSync(join(import.meta.dir, "..", "adapter")).filter((name) => name.endsWith(".c")).sort();
+}
+function assertPublicDepfiles(build: string, source: string): void {
+  const depfiles = readdirSync(build).filter((name) => name.endsWith(".d")).sort();
+  if (depfiles.length !== publicSources().length) throw new OracleError(`expected one depfile per public adapter, found ${depfiles.length}`);
+  for (const name of depfiles) {
+    const text = readFileSync(join(build, name), "utf8");
+    if (text.includes(`${source}/src/`) || text.split(/\\s+/).some((part) => part === "src/" || part.includes("/src/"))) {
+      throw new OracleError(`public adapter depfile imports upstream private src/: ${name}`);
     }
   }
-  if (!workspace || !sha) throw new OracleError("usage: oracle.ts upstream-test --workspace <kex-root> --sha <full-sha>");
-  return { workspace, sha };
+}
+function publicFirewall(source: string, build: string): void {
+  const mutation = join(build, "negative-private-include.c");
+  writeFileSync(mutation, '#include "src/private-oracle-mutation.h"\nint main(void) { return 0; }\n');
+  const result = command(compiler(), ["-std=c11", "-I", join(import.meta.dir, "..", "include"), "-I", join(source, "include"), "-c", mutation, "-o", join(build, "negative.o")]);
+  rmSync(mutation, { force: true });
+  if (result.status === 0) throw new OracleError("negative private-src include mutation unexpectedly compiled");
+}
+function buildPublic(source: string, build: string): { executable: string; compiler: ReturnType<typeof compilerEvidence>; cmake: string[] } {
+  mkdirSync(build, { recursive: true });
+  const generator = cmakeGenerator();
+  const cmake = ["-S", source, "-B", build, ...(generator ? ["-G", generator] : []), "-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "-DBOX3D_SAMPLES=OFF", "-DBOX3D_BENCHMARKS=OFF", "-DBOX3D_DOCS=OFF", "-DBOX3D_UNIT_TESTS=OFF", "-DBOX3D_VALIDATE=ON"];
+  checked("cmake", cmake);
+  checked("cmake", ["--build", build, "--target", "box3d"]);
+  const adapterBuild = join(build, "public-adapter");
+  mkdirSync(adapterBuild, { recursive: true });
+  const cc = compiler();
+  for (const name of publicSources()) {
+    const sourceFile = join(import.meta.dir, "..", "adapter", name);
+    const object = join(adapterBuild, `${basename(name, ".c")}.o`);
+    checked(cc, ["-std=c11", "-Wall", "-Wextra", "-Werror", "-MMD", "-MF", `${object}.d`, "-I", join(import.meta.dir, "..", "include"), "-I", join(source, "include"), "-c", sourceFile, "-o", object]);
+  }
+  assertPublicDepfiles(adapterBuild, source);
+  publicFirewall(source, adapterBuild);
+  const executable = join(adapterBuild, "box3d-public-adapter");
+  const objects = publicSources().map((name) => join(adapterBuild, `${basename(name, ".c")}.o`));
+  checked(cc, [...objects, join(build, "src", "libbox3d.a"), "-lm", "-o", executable]);
+  return { executable, compiler: compilerEvidence(), cmake };
+}
+function canonicalJson(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n`; }
+function membership(): Record<string, unknown> {
+  return { schema: "box3d-oracle/v1", public: PUBLIC_SYMBOLS, deferredPrivateCases: DEFERRED_PRIVATE_CASES, disposition: "Named families requiring upstream private layouts or additive hooks remain deferred to O3; no private observations enter O2." };
+}
+function generatedFiles(output: string): BundleFile[] {
+  const schema = readFileSync(join(import.meta.dir, "..", "schema", "v1.json"), "utf8");
+  return [
+    { name: "schema.json", data: schema.endsWith("\n") ? schema : `${schema}\n` },
+    { name: "membership.json", data: canonicalJson(membership()) },
+  ];
+}
+function writeBundleFiles(output: string, files: BundleFile[]): void {
+  for (const file of files) writeFileSync(join(output, file.name), file.data);
+}
+function generateBundle(workspace: string, sha: string, output: string): Record<string, unknown> {
+  requireFullSha(sha);
+  const root = resolve(workspace);
+  ensureEmptyDirectory(output);
+  const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
+  const remoteCache = join(cache, "official.git");
+  const reachability = verifyReachable(OFFICIAL_SOURCE_URL, sha, remoteCache);
+  const source = materializePristine(remoteCache, sha);
+  const pristine = verifyPristine(source, sha);
+  const build = join(cache, "public-builds", sha);
+  rmSync(build, { recursive: true, force: true });
+  const evidence = buildPublic(source, build);
+  const casesPath = join(output, "cases.json");
+  checked(evidence.executable, [casesPath]);
+  const cases = readFileSync(casesPath, "utf8");
+  const parsed = JSON.parse(cases) as { schema?: string; cases?: Array<{ id: string; family: string; symbol: string; input: unknown; output: unknown }> };
+  if (parsed.schema !== "box3d-oracle/v1" || !Array.isArray(parsed.cases) || parsed.cases.length === 0) throw new OracleError("public adapter emitted an invalid case corpus");
+  const ids = new Set<string>();
+  for (const item of parsed.cases) {
+    if (!item.id || ids.has(item.id) || !item.family || !item.symbol || item.input === undefined || item.output === undefined) throw new OracleError(`invalid or duplicate public case: ${item.id}`);
+    ids.add(item.id);
+  }
+  const files = generatedFiles(output);
+  files.push({ name: "cases.json", data: cases });
+  writeBundleFiles(output, files);
+  const fileDigests: Record<string, string> = {};
+  for (const file of files) fileDigests[file.name] = sha256File(join(output, file.name));
+  const memberCommit = checked("git", ["rev-parse", "HEAD"], join(root, "projects", "box3d-oracle")).stdout.trim();
+  const generatorPath = join(import.meta.dir, "oracle.ts");
+  const manifest: Record<string, unknown> = {
+    schema: "box3d-oracle/manifest-v1",
+    bundle: { upstreamSha: sha, schema: "v1", identity: `${sha}/v1` },
+    upstream: { url: OFFICIAL_SOURCE_URL, ref: OFFICIAL_SOURCE_REF, channel: "official-main", sha, tree: pristine.tree, reachableFromChannel: true },
+    oracle: { memberCommit, generator: "bin/oracle.ts", generatorSha256: sha256File(generatorPath), adapters: publicSources().map((name) => ({ path: `adapter/${name}`, sha256: sha256File(join(import.meta.dir, "..", "adapter", name)) })) },
+    build: { compiler: evidence.compiler, cmake: evidence.cmake.map((value) => value === source ? "<official-source>" : value === build ? "<public-build>" : value), library: "official libbox3.a", publicIncludeRoot: "include/box3d", privateIncludeFirewall: "depfiles reject upstream src/ and negative mutation must fail", executableSha256: sha256File(evidence.executable) },
+    schemaDefinition: "schema.json",
+    membership: "membership.json",
+    caseFile: "cases.json",
+    caseCount: parsed.cases.length,
+    fileDigests,
+    fileDigestScope: "Generated evidence files only; manifest is the receipt and is intentionally excluded from its own digest map.",
+    generation: { startsEmpty: true, readsShallot: false, readsGolds: false, overwrite: false, outputArithmetic: false },
+    deferredPrivateCases: DEFERRED_PRIVATE_CASES,
+  };
+  writeFileSync(join(output, "manifest.json"), canonicalJson(manifest));
+  verifyPristine(source, sha);
+  return manifest;
+}
+function compareTrees(expected: string, actual: string): void {
+  const names = (path: string) => readdirSync(path).filter((name) => statSync(join(path, name)).isFile()).sort();
+  const expectedNames = names(expected);
+  const actualNames = names(actual);
+  if (JSON.stringify(expectedNames) !== JSON.stringify(actualNames)) throw new OracleError(`bundle file set differs: expected ${expectedNames.join(",")}, got ${actualNames.join(",")}`);
+  for (const name of expectedNames) {
+    const a = readFileSync(join(expected, name));
+    const b = readFileSync(join(actual, name));
+    if (!a.equals(b)) throw new OracleError(`bundle file differs: ${name}`);
+  }
+}
+function reproduce(workspace: string, bundle: string): void {
+  const bundleRoot = resolve(workspace, bundle);
+  const manifest = JSON.parse(readFileSync(join(bundleRoot, "manifest.json"), "utf8")) as { bundle?: { upstreamSha?: string; schema?: string } };
+  const sha = manifest.bundle?.upstreamSha;
+  if (!sha || manifest.bundle?.schema !== "v1") throw new OracleError("bundle manifest does not identify schema v1 and a full upstream SHA");
+  const first = mkdtempSync(join(tmpdir(), "box3d-oracle-reproduce-a-"));
+  const second = mkdtempSync(join(tmpdir(), "box3d-oracle-reproduce-b-"));
+  try {
+    generateBundle(workspace, sha, first);
+    generateBundle(workspace, sha, second);
+    compareTrees(first, second);
+    compareTrees(bundleRoot, first);
+  } finally {
+    rmSync(first, { recursive: true, force: true });
+    rmSync(second, { recursive: true, force: true });
+  }
+}
+function parseArgs(args: string[]): { command: string; workspace: string; sha?: string; output?: string; bundle?: string } {
+  const name = args[0];
+  if (!name || !["upstream-test", "generate", "reproduce"].includes(name)) throw new OracleError("usage: oracle.ts upstream-test|generate|reproduce ...");
+  const result: { command: string; workspace: string; sha?: string; output?: string; bundle?: string } = { command: name, workspace: "" };
+  for (let index = 1; index < args.length; index += 1) {
+    const flag = args[index]; const value = args[index + 1];
+    if (!value || !["--workspace", "--sha", "--output", "--bundle"].includes(flag)) throw new OracleError(`unknown or incomplete argument: ${flag}`);
+    if (flag === "--workspace") result.workspace = value;
+    if (flag === "--sha") result.sha = value;
+    if (flag === "--output") result.output = value;
+    if (flag === "--bundle") result.bundle = value;
+    index += 1;
+  }
+  if (!result.workspace) throw new OracleError("--workspace is required");
+  return result;
 }
 
 if (import.meta.main) {
   try {
-    const { workspace, sha } = parseArgs(process.argv.slice(2));
-    const result = upstreamTest(workspace, sha);
-    console.log(`upstream-test: PASS ${sha}`);
-    console.log(`receipt: ${relative(resolve(workspace), result.receiptPath)}`);
-    console.log(JSON.stringify(result.receipt, null, 2));
+    const args = parseArgs(process.argv.slice(2));
+    if (args.command === "upstream-test") {
+      if (!args.sha) throw new OracleError("--sha is required for upstream-test");
+      const result = upstreamTest(args.workspace, args.sha);
+      console.log(`upstream-test: PASS ${args.sha}`); console.log(`receipt: ${relative(resolve(args.workspace), result.receiptPath)}`); console.log(JSON.stringify(result.receipt, null, 2));
+    } else if (args.command === "generate") {
+      if (!args.sha || !args.output) throw new OracleError("generate requires --sha and --output");
+      const result = generateBundle(args.workspace, args.sha, resolve(args.output));
+      console.log(`generate: PASS ${String((result.bundle as { identity: string }).identity)}`);
+    } else {
+      if (!args.bundle) throw new OracleError("reproduce requires --bundle");
+      reproduce(args.workspace, args.bundle);
+      console.log(`reproduce: PASS ${args.bundle}`);
+    }
   } catch (error) {
-    console.error(`upstream-test: FAIL ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`${process.argv[2] ?? "oracle"}: FAIL ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
 }
