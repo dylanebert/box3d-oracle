@@ -95,10 +95,11 @@ static b3HeightFieldData* make_height_field(const ScenarioHeightFieldData* sourc
     b3HeightFieldData* field = b3CreateHeightField(&def); free(heights); free(materials); return field;
 }
 
+static b3Transform normalized_frame(const ScenarioCommand* c, int offset) { b3Transform result = xf(c, offset); result.q = b3NormalizeQuat(result.q); return result; }
 static void set_base(b3JointDef* base, const ScenarioCommand* c, b3BodyId* bodies)
 {
     base->bodyIdA = bodies[c->a]; base->bodyIdB = bodies[c->b];
-    base->localFrameA = xf(c, 0); base->localFrameB = xf(c, 7);
+    base->localFrameA = HAS(c, 55) ? normalized_frame(c, 0) : xf(c, 0); base->localFrameB = HAS(c, 55) ? normalized_frame(c, 7) : xf(c, 7);
 }
 
 static int create_joint(const ScenarioCommand* c, b3WorldId world, b3BodyId* bodies)
