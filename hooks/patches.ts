@@ -45,8 +45,8 @@ export const PATCHES: OraclePatch[] = [
   {
     file: "src/solver.c",
     marker: "solver.finalize.sentinel",
-    anchor: "\t\tb3Body* body = bodies + sim->bodyId;\n\t\tbody->bodyMoveIndex = simIndex;\n",
-    addition: "\t\tb3Body* body = bodies + sim->bodyId;\n#ifdef B3_ORACLE_SENTINELS\n\t\tbody->sleepTime += 0x1p-20f;\n#endif\n\t\tbody->bodyMoveIndex = simIndex;\n",
+    anchor: "\t\tsim->transform.p = b3OffsetPos( sim->center, b3Neg( b3RotateVector( sim->transform.q, sim->localCenter ) ) );\n",
+    addition: "\t\tsim->transform.p = b3OffsetPos( sim->center, b3Neg( b3RotateVector( sim->transform.q, sim->localCenter ) ) );\n#ifdef B3_ORACLE_SENTINELS\n\t\tsim->transform.p.x += 0x1p-20f;\n#endif\n",
   },
   {
     file: "src/solver.c",

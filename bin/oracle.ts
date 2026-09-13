@@ -523,6 +523,52 @@ function generateBundleV2(workspace: string, sha: string, output: string): Recor
   return manifest;
 }
 
+function sentinelTest(workspace: string, sha: string): void {
+  requireFullSha(sha);
+  const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
+  const source = materializePristine(join(cache, "official.git"), sha);
+  const basePatched = join(cache, "checkouts", `${sha}-sentinel-base`);
+  rmSync(basePatched, { recursive: true, force: true });
+  patchOfficialSource(source, basePatched);
+  const baseBuild = join(cache, "sentinel-builds", `${sha}-base`);
+  rmSync(baseBuild, { recursive: true, force: true });
+  const base = buildPatched(basePatched, baseBuild);
+  const outputRoot = mkdtempSync(join(tmpdir(), "box3d-oracle-sentinel-"));
+  const baselinePath = join(outputRoot, "baseline.json");
+  checked(base.executable, [baselinePath]);
+  const baseline = JSON.parse(readFileSync(baselinePath, "utf8")) as { cases: Array<{ id: string; output: unknown }> };
+  const mutations = [
+    { name: "world-hash", file: "src/recording.c", before: "0x9e3779b97f4a7c15ull", after: "0x1ull", id: "whitebox.world-hash.v2" },
+    { name: "integrate-velocities", file: "src/solver.c", before: "state->linearVelocity.x += 0x1p-20f;", after: "state->linearVelocity.x += 0x1p-19f;", id: "whitebox.integrate-velocities.v2" },
+    { name: "integrate-positions", file: "src/solver.c", before: "state->deltaPosition.y += 0x1p-20f;", after: "state->deltaPosition.y += 0x1p-19f;", id: "whitebox.integrate-positions.v2" },
+    { name: "finalize", file: "src/solver.c", before: "sim->transform.p.x += 0x1p-20f;", after: "sim->transform.p.x += 0x1p-19f;", id: "whitebox.finalize.v2" },
+    { name: "recycle", file: "src/physics_world.c", before: "++b3OracleRecycleVisits;", after: "b3OracleRecycleVisits += 2;", id: "whitebox.recycle.v2" },
+  ];
+  try {
+    for (const mutation of mutations) {
+      const patched = join(cache, "checkouts", `${sha}-sentinel-${mutation.name}`);
+      rmSync(patched, { recursive: true, force: true });
+      checked("cp", ["-R", basePatched, patched]);
+      const path = join(patched, mutation.file);
+      const original = readFileSync(path, "utf8");
+      if (original.split(mutation.before).length !== 2) throw new OracleError(`sentinel fixture is not unique: ${mutation.name}`);
+      writeFileSync(path, original.replace(mutation.before, mutation.after));
+      const build = join(cache, "sentinel-builds", `${sha}-${mutation.name}`);
+      rmSync(build, { recursive: true, force: true });
+      const evidence = buildPatched(patched, build);
+      const output = join(outputRoot, `${mutation.name}.json`);
+      checked(evidence.executable, [output]);
+      const cases = JSON.parse(readFileSync(output, "utf8")) as { cases: Array<{ id: string; output: unknown }> };
+      const before = baseline.cases.find((item) => item.id === mutation.id)?.output;
+      const after = cases.cases.find((item) => item.id === mutation.id)?.output;
+      if (JSON.stringify(before) === JSON.stringify(after)) throw new OracleError(`sentinel mutation did not reach vector: ${mutation.name}`);
+      console.log(`sentinel: PASS ${mutation.name}`);
+    }
+  } finally {
+    rmSync(outputRoot, { recursive: true, force: true });
+  }
+}
+
 function compareTrees(expected: string, actual: string, includeManifest = true): void {
   const names = (path: string) => readdirSync(path).filter((name) => statSync(join(path, name)).isFile() && (includeManifest || name !== "manifest.json")).sort();
   const expectedNames = names(expected);
@@ -555,7 +601,7 @@ function reproduce(workspace: string, bundle: string): void {
 }
 function parseArgs(args: string[]): { command: string; workspace: string; sha?: string; output?: string; bundle?: string; schema?: string } {
   const name = args[0];
-  if (!name || !["upstream-test", "generate", "reproduce"].includes(name)) throw new OracleError("usage: oracle.ts upstream-test|generate|reproduce ...");
+  if (!name || !["upstream-test", "generate", "reproduce", "sentinel-test"].includes(name)) throw new OracleError("usage: oracle.ts upstream-test|generate|reproduce|sentinel-test ...");
   const result: { command: string; workspace: string; sha?: string; output?: string; bundle?: string; schema?: string } = { command: name, workspace: "" };
   for (let index = 1; index < args.length; index += 1) {
     const flag = args[index]; const value = args[index + 1];
@@ -578,6 +624,10 @@ if (import.meta.main) {
       if (!args.sha) throw new OracleError("--sha is required for upstream-test");
       const result = upstreamTest(args.workspace, args.sha);
       console.log(`upstream-test: PASS ${args.sha}`); console.log(`receipt: ${relative(resolve(args.workspace), result.receiptPath)}`); console.log(JSON.stringify(result.receipt, null, 2));
+    } else if (args.command === "sentinel-test") {
+      if (!args.sha) throw new OracleError("--sha is required for sentinel-test");
+      sentinelTest(args.workspace, args.sha);
+      console.log(`sentinel-test: PASS ${args.sha}`);
     } else if (args.command === "generate") {
       if (!args.sha || !args.output) throw new OracleError("generate requires --sha and --output");
       const result = args.schema === "v2" ? generateBundleV2(args.workspace, args.sha, resolve(args.output)) : generateBundle(args.workspace, args.sha, resolve(args.output));
