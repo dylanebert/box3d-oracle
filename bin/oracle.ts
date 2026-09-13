@@ -429,6 +429,20 @@ function buildPatchedO4(source: string, build: string, disableSimd: boolean): { 
   return { executable, map, nm: nm.stdout, compiler: compilerEvidence(), cmake, hookDigest: hookDigest() };
 }
 
+function buildScenario(patched: string, build: string, table: string): { executable: string; hookDigest: string; cmake: string[] } {
+  const generator = cmakeGenerator();
+  const cmake = ["-S", patched, "-B", build, ...(generator ? ["-G", generator] : []), "-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "-DBOX3D_SAMPLES=OFF", "-DBOX3D_BENCHMARKS=OFF", "-DBOX3D_DOCS=OFF", "-DBOX3D_UNIT_TESTS=ON", "-DBOX3D_VALIDATE=ON", "-DCMAKE_C_FLAGS=-DB3_ORACLE_HOOKS"];
+  checked("cmake", cmake);
+  checked("cmake", ["--build", build, "--target", "box3d"]);
+  const adapterBuild = join(build, "scenario-adapter");
+  mkdirSync(adapterBuild, { recursive: true });
+  const object = join(adapterBuild, "scenario.o");
+  checked(compiler(), ["-std=c11", "-Wall", "-Wextra", "-Werror", "-I", table, "-I", join(import.meta.dir, "..", "include"), "-I", join(patched, "include"), "-I", join(patched, "src"), "-c", join(import.meta.dir, "..", "adapter", "scenario.c"), "-o", object]);
+  const executable = join(adapterBuild, "box3d-scenario-adapter");
+  checked(compiler(), [object, join(build, "src", "libbox3d.a"), "-lm", "-o", executable]);
+  return { executable, hookDigest: hookDigest(), cmake: cmake.map((value) => value === patched ? "<patched-official-source>" : value === build ? "<scenario-build>" : value) };
+}
+
 function canonicalJson(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n`; }
 function membership(): Record<string, unknown> {
   return { schema: "box3d-oracle/v1", public: PUBLIC_SYMBOLS, deferredPrivateCases: DEFERRED_PRIVATE_CASES, disposition: "Named families requiring upstream private layouts or additive hooks remain deferred to O3; no private observations enter O2." };
@@ -720,6 +734,133 @@ function compareTrees(expected: string, actual: string, includeManifest = true):
     if (!a.equals(b)) throw new OracleError(`bundle file differs: ${name}`);
   }
 }
+const SCENARIO_ROSTER = ["free-fall", "sphere-drop", "box-stack", "sphere-sleep", "box-sleep", "wake-drop", "split-slide"] as const;
+const SCENARIO_FAMILIES: Record<string, string[]> = { foundation: [...SCENARIO_ROSTER], all: [...SCENARIO_ROSTER] };
+
+function legacyScenarioSource(cache: string, sha: string): string {
+  requireFullSha(sha);
+  const remote = join(cache, "legacy.git");
+  if (!existsSync(join(remote, "HEAD"))) checked("git", ["init", "--bare", remote]);
+  const configured = command("git", ["config", "--get", "remote.legacy.url"], remote);
+  const legacyRepository = ["https://github.com", "dylanebert", "box3d"].join("/") + ".git";
+  if (configured.status !== 0) checked("git", ["remote", "add", "legacy", legacyRepository], remote);
+  checked("git", ["fetch", "--no-tags", "legacy", `+${sha}:refs/remotes/legacy/migration`], remote);
+  const checkout = join(cache, "legacy-checkouts", sha);
+  rmSync(checkout, { recursive: true, force: true });
+  checked("git", ["clone", "--quiet", "--no-checkout", remote, checkout]);
+  checked("git", ["checkout", "--quiet", "--detach", sha], checkout);
+  const source = join(checkout, "fixtures", "gen.c");
+  if (!existsSync(source)) throw new OracleError(`legacy source is missing fixtures/gen.c at ${sha}`);
+  return source;
+}
+
+function buildLegacyScenario(source: string, official: string, build: string): string {
+  const migrationRoot = join(build, "migration-source");
+  rmSync(migrationRoot, { recursive: true, force: true });
+  checked("cp", ["-R", official, migrationRoot]);
+  mkdirSync(join(migrationRoot, "fixtures"), { recursive: true });
+  const input = readFileSync(source, "utf8");
+  const anchor = "if ( step % B3_FIXTURE_STATE_INTERVAL == 0 || isLast )";
+  if (input.split(anchor).length !== 2) throw new OracleError("legacy serialization patch anchor is not unique");
+  const serializationOnly = input.replace(anchor, "if ( true ) /* B3_ORACLE_SERIALIZATION_ONLY */");
+  writeFileSync(join(migrationRoot, "fixtures", "gen.c"), serializationOnly);
+  const object = join(build, "legacy-gen.o");
+  checked(compiler(), ["-std=c11", "-ffunction-sections", "-fdata-sections", "-I", join(migrationRoot, "include"), "-I", join(migrationRoot, "src"), "-I", join(migrationRoot, "shared"), "-c", join(migrationRoot, "fixtures", "gen.c"), "-o", object]);
+  checked("cmake", ["--build", build, "--target", "shared"]);
+  const compatibility = join(build, "migration-serialization-compat.c");
+  writeFileSync(compatibility, "#include <stddef.h>\nint b3InternalAssert(const char* condition, const char* fileName, int lineNumber) { (void)condition; (void)fileName; (void)lineNumber; return 0; }\n");
+  const compatibilityObject = join(build, "migration-serialization-compat.o");
+  checked(compiler(), ["-std=c11", "-c", compatibility, "-o", compatibilityObject]);
+  const executable = join(build, "legacy-fixture-gen");
+  checked(compiler(), [object, compatibilityObject, join(build, "shared", "libshared.a"), join(build, "src", "libbox3d.a"), "-lm", "-Wl,-dead_strip", "-o", executable]);
+  return executable;
+}
+
+function f32Hex(value: number): string {
+  const bytes = new ArrayBuffer(4); const view = new DataView(bytes); view.setFloat32(0, value, true);
+  return `0x${view.getUint32(0, true).toString(16).padStart(8, "0")}`;
+}
+function normalizedLegacyBody(body: { p: number[]; q: number[]; v?: number[]; w?: number[] }): Record<string, unknown> {
+  const vector = (values: number[]) => values.map((value) => f32Hex(value));
+  return { p: vector(body.p), q: vector(body.q), ...(body.v ? { v: vector(body.v) } : {}), ...(body.w ? { w: vector(body.w) } : {}) };
+}
+
+function scenarioMigrate(workspace: string, sha: string, legacySha: string, family: string): void {
+  requireFullSha(sha); requireFullSha(legacySha);
+  const roster = SCENARIO_FAMILIES[family];
+  if (!roster) throw new OracleError(`unknown scenario family ${family}`);
+  const root = resolve(workspace);
+  const corpus = join(root, "projects", "box3d-oracle", "scenarios", "commands-v1.json");
+  const compilerScript = join(root, "projects", "box3d-oracle", "bin", "compile-scenarios.ts");
+  if (!existsSync(corpus) || !existsSync(compilerScript)) throw new OracleError("scenario corpus or compiler is missing");
+  const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
+  verifyReachable(OFFICIAL_SOURCE_URL, sha, join(cache, "official.git"));
+  const official = materializePristine(join(cache, "official.git"), sha);
+  const patched = join(cache, "checkouts", `${sha}-scenario-patched`); rmSync(patched, { recursive: true, force: true }); patchOfficialSource(official, patched);
+  const build = join(cache, "scenario-builds", `${sha}-${family}`); rmSync(build, { recursive: true, force: true }); mkdirSync(build, { recursive: true });
+  const table = join(build, "scenario_table.h"); checked("bun", [compilerScript, corpus, table]);
+  const evidence = buildScenario(patched, build, dirname(table));
+  const legacy = buildLegacyScenario(legacyScenarioSource(cache, legacySha), official, build);
+  const legacyOut = join(build, "legacy-output"); rmSync(legacyOut, { recursive: true, force: true }); mkdirSync(legacyOut, { recursive: true });
+  checked(legacy, [legacyOut]);
+  const corpusJson = JSON.parse(readFileSync(corpus, "utf8")) as { scenarios: Array<{ name: string; id: string; commands: Array<{ id: string; op: string }> }> };
+  const selected = corpusJson.scenarios.map((scenario, index) => ({ ...scenario, index })).filter((scenario) => roster.includes(scenario.name));
+  if (selected.length !== roster.length || selected.some((item, index) => item.name !== roster[index])) throw new OracleError(`scenario family ${family} does not match the exact ordered roster`);
+  let mismatches = 0;
+  const receipts: unknown[] = [];
+  for (const item of selected) {
+    const result = command(evidence.executable, ["--index", String(item.index)]);
+    if (result.status !== 0) throw new OracleError(`new official scenario failed for ${item.name}: ${result.stderr}`);
+    const actual = JSON.parse(result.stdout);
+    const oldPath = join(legacyOut, `${item.name}.json`);
+    if (!existsSync(oldPath)) throw new OracleError(`legacy baseline did not emit ${item.name}`);
+    const old = JSON.parse(readFileSync(oldPath, "utf8")) as { hashes: string[]; states: Array<{ step: number; bodies: Array<{ p: number[]; q: number[]; v?: number[]; w?: number[] }> }> };
+    const actualHashes = (actual.hashes as Array<{ value: string }>).map((entry) => entry.value);
+    let scenarioMismatch = JSON.stringify(actualHashes) !== JSON.stringify(old.hashes);
+    const actualObservations = actual.observations as Array<{ bodies: Array<Record<string, unknown>> }>;
+    const sameBody = (oldBody: { p: number[]; q: number[]; v?: number[]; w?: number[] }, newBody: Record<string, unknown>): boolean => {
+      const expected = normalizedLegacyBody(oldBody);
+      if (JSON.stringify(expected.p) !== JSON.stringify(newBody.p) || JSON.stringify(expected.q) !== JSON.stringify(newBody.q)) return false;
+      if (expected.v !== undefined && JSON.stringify(expected.v) !== JSON.stringify(newBody.v)) return false;
+      if (expected.w !== undefined && JSON.stringify(expected.w) !== JSON.stringify(newBody.w)) return false;
+      return true;
+    };
+    if (old.states.length !== actualObservations.length || old.states.some((state, step) => state.bodies.length !== actualObservations[step].bodies.length || state.bodies.some((body, index) => !sameBody(body, actualObservations[step].bodies[index])))) scenarioMismatch = true;
+    if (actual.receipt?.corpusDigest !== createHash("sha256").update(readFileSync(corpus)).digest("hex")) scenarioMismatch = true;
+    if (JSON.stringify(actual.receipt?.consumedCommands) !== JSON.stringify(item.commands.map((command) => command.id))) scenarioMismatch = true;
+    if (JSON.stringify(actual.receipt?.observationIds) !== JSON.stringify(item.commands.filter((command) => command.op === "observe").map((command) => command.id))) scenarioMismatch = true;
+    if (scenarioMismatch) mismatches += 1;
+    receipts.push({ id: item.id, name: item.name, consumedCommands: actual.receipt?.consumedCommands?.length, observations: actual.observations?.length, hashes: actual.hashes?.length, mismatch: scenarioMismatch });
+  }
+  const malformedUnknown = join(build, "malformed-unknown.json");
+  const malformedUnknownData = JSON.parse(readFileSync(corpus, "utf8")) as { scenarios: Array<{ commands: Array<Record<string, unknown>> }> };
+  malformedUnknownData.scenarios[0].commands[0].op = "scenario-name-dispatch";
+  writeFileSync(malformedUnknown, canonicalJson(malformedUnknownData));
+  const malformedUnknownResult = command("bun", [compilerScript, malformedUnknown, join(build, "malformed-unknown.h")]);
+  if (malformedUnknownResult.status === 0) mismatches += 1;
+  const malformedUnconsumed = join(build, "malformed-unconsumed.json");
+  const malformedUnconsumedData = JSON.parse(readFileSync(corpus, "utf8")) as { scenarios: Array<{ commands: Array<Record<string, unknown>> }> };
+  malformedUnconsumedData.scenarios[0].commands = malformedUnconsumedData.scenarios[0].commands.filter((command) => !(command.op === "hash" && command.step === 0));
+  writeFileSync(malformedUnconsumed, canonicalJson(malformedUnconsumedData));
+  const malformedUnconsumedResult = command("bun", [compilerScript, malformedUnconsumed, join(build, "malformed-unconsumed.h")]);
+  if (malformedUnconsumedResult.status === 0) mismatches += 1;
+  const mutationCorpus = join(build, "mutation-commands-v1.json");
+  const mutation = JSON.parse(readFileSync(corpus, "utf8")) as { scenarios: Array<{ commands: Array<Record<string, unknown>> }> };
+  const mutationBody = mutation.scenarios[0].commands.find((command) => command.op === "body.create");
+  if (!mutationBody) throw new OracleError("free-fall mutation target is missing");
+  mutationBody.angularVelocity = ["0x40000000", "0x40a00000", "0x40000000"];
+  writeFileSync(mutationCorpus, canonicalJson(mutation));
+  const mutationBuild = join(cache, "scenario-builds", `${sha}-${family}-mutation`); rmSync(mutationBuild, { recursive: true, force: true }); mkdirSync(mutationBuild, { recursive: true });
+  const mutationTable = join(mutationBuild, "scenario_table.h"); checked("bun", [compilerScript, mutationCorpus, mutationTable]);
+  const mutationEvidence = buildScenario(patched, mutationBuild, dirname(mutationTable));
+  const baselineMutation = command(evidence.executable, ["--index", "0"]); const changedMutation = command(mutationEvidence.executable, ["--index", "0"]);
+  if (baselineMutation.status !== 0 || changedMutation.status !== 0 || baselineMutation.stdout === changedMutation.stdout) mismatches += 1;
+  const report = { schema: "box3d-oracle/scenario-migration/v1", family, officialSha: sha, legacySha, roster: selected.map((item) => ({ id: item.id, name: item.name })), receipts, mutation: { command: "body.create.angularVelocity", officialAdapterChanged: baselineMutation.stdout !== changedMutation.stdout, shallotAdapterChecked: "box3d-scenario-command-corpus" }, mismatchCount: mismatches, publication: mismatches === 0 ? "accepted" : "refused" };
+  writeFileSync(join(build, "scenario-migration.json"), canonicalJson(report));
+  console.log(JSON.stringify(report, null, 2));
+  if (mismatches !== 0) throw new OracleError(`scenario migration refused: ${mismatches} mismatches`);
+}
+
 function reproduce(workspace: string, bundle: string): void {
   const bundleRoot = resolve(workspace, bundle);
   const manifest = JSON.parse(readFileSync(join(bundleRoot, "manifest.json"), "utf8")) as { bundle?: { upstreamSha?: string; schema?: string } };
@@ -739,18 +880,20 @@ function reproduce(workspace: string, bundle: string): void {
     rmSync(second, { recursive: true, force: true });
   }
 }
-function parseArgs(args: string[]): { command: string; workspace: string; sha?: string; output?: string; bundle?: string; schema?: string } {
+function parseArgs(args: string[]): { command: string; workspace: string; sha?: string; legacySha?: string; output?: string; bundle?: string; schema?: string; family?: string } {
   const name = args[0];
-  if (!name || !["upstream-test", "generate", "reproduce", "sentinel-test"].includes(name)) throw new OracleError("usage: oracle.ts upstream-test|generate|reproduce|sentinel-test ...");
-  const result: { command: string; workspace: string; sha?: string; output?: string; bundle?: string; schema?: string } = { command: name, workspace: "" };
+  if (!name || !["upstream-test", "generate", "reproduce", "sentinel-test", "scenario-migrate"].includes(name)) throw new OracleError("usage: oracle.ts upstream-test|generate|reproduce|sentinel-test|scenario-migrate ...");
+  const result: { command: string; workspace: string; sha?: string; legacySha?: string; output?: string; bundle?: string; schema?: string; family?: string } = { command: name, workspace: "" };
   for (let index = 1; index < args.length; index += 1) {
     const flag = args[index]; const value = args[index + 1];
-    if (!value || !["--workspace", "--sha", "--output", "--bundle", "--schema"].includes(flag)) throw new OracleError(`unknown or incomplete argument: ${flag}`);
+    if (!value || !["--workspace", "--sha", "--legacy-sha", "--output", "--bundle", "--schema", "--family"].includes(flag)) throw new OracleError(`unknown or incomplete argument: ${flag}`);
     if (flag === "--workspace") result.workspace = value;
     if (flag === "--sha") result.sha = value;
+    if (flag === "--legacy-sha") result.legacySha = value;
     if (flag === "--output") result.output = value;
     if (flag === "--bundle") result.bundle = value;
     if (flag === "--schema") result.schema = value;
+    if (flag === "--family") result.family = value;
     index += 1;
   }
   if (!result.workspace) throw new OracleError("--workspace is required");
@@ -760,7 +903,10 @@ function parseArgs(args: string[]): { command: string; workspace: string; sha?: 
 if (import.meta.main) {
   try {
     const args = parseArgs(process.argv.slice(2));
-    if (args.command === "upstream-test") {
+    if (args.command === "scenario-migrate") {
+      if (!args.sha || !args.legacySha || !args.family) throw new OracleError("scenario-migrate requires --sha, --legacy-sha, and --family");
+      scenarioMigrate(args.workspace, args.sha, args.legacySha, args.family);
+    } else if (args.command === "upstream-test") {
       if (!args.sha) throw new OracleError("--sha is required for upstream-test");
       const result = upstreamTest(args.workspace, args.sha);
       console.log(`upstream-test: PASS ${args.sha}`); console.log(`receipt: ${relative(resolve(args.workspace), result.receiptPath)}`); console.log(JSON.stringify(result.receipt, null, 2));

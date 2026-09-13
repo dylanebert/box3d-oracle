@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DECLARED_SYMBOLS, O4_DECLARED_SYMBOLS, PATCHES } from "../hooks/patches";
 
-const required = ["README.md", "package.json", "bin/oracle.ts", "bin/check.ts", "test/oracle.test.ts", "include/box3d_oracle_adapter.h", "adapter/main.c", "adapter/math.c", "adapter/geometry.c", "adapter/distance.c", "adapter/tree.c", "adapter/manifold.c", "adapter/query.c", "adapter/mover.c", "adapter/writer.c", "adapter/o3_main.c", "adapter/o4_main.c", "adapter/o4.c", "adapter/whitebox.c", "hooks/patches.ts", "hooks/oracle_hooks.h", "schema/v1.json"];
+const required = ["README.md", "package.json", "bin/oracle.ts", "bin/check.ts", "bin/compile-scenarios.ts", "test/oracle.test.ts", "include/box3d_oracle_adapter.h", "adapter/main.c", "adapter/math.c", "adapter/geometry.c", "adapter/distance.c", "adapter/tree.c", "adapter/manifold.c", "adapter/query.c", "adapter/mover.c", "adapter/writer.c", "adapter/o3_main.c", "adapter/o4_main.c", "adapter/o4.c", "adapter/whitebox.c", "adapter/scenario.c", "hooks/patches.ts", "hooks/oracle_hooks.h", "schema/v1.json", "schema/scenario-command-v1.json", "scenarios/commands-v1.json"];
 for (const path of required) {
   if (!existsSync(join(import.meta.dir, "..", path))) throw new Error(`missing required path: ${path}`);
 }
@@ -23,6 +23,15 @@ for (const source of ["adapter/math.c", "adapter/geometry.c", "adapter/distance.
 }
 const schema = JSON.parse(readFileSync(join(import.meta.dir, "..", "schema/v1.json"), "utf8")) as { $id?: string; description?: string };
 if (schema.$id !== "box3d-oracle/v1" || !schema.description?.includes("fixed-width")) throw new Error("integer-preserving schema is incomplete");
+const scenarioSchema = JSON.parse(readFileSync(join(import.meta.dir, "..", "schema/scenario-command-v1.json"), "utf8")) as { $id?: string };
+if (scenarioSchema.$id !== "box3d-oracle/scenario-command/v1") throw new Error("scenario command schema is incomplete");
+const scenarioCorpus = JSON.parse(readFileSync(join(import.meta.dir, "..", "scenarios/commands-v1.json"), "utf8")) as { schema?: string; scenarios?: Array<{ id: string; name: string; commands: Array<Record<string, unknown>> }> };
+const scenarioRoster = ["free-fall", "sphere-drop", "box-stack", "sphere-sleep", "box-sleep", "wake-drop", "split-slide"];
+if (scenarioCorpus.schema !== "box3d-oracle/scenario-command/v1" || JSON.stringify(scenarioCorpus.scenarios?.map((scenario) => scenario.name)) !== JSON.stringify(scenarioRoster) || scenarioCorpus.scenarios?.some((scenario) => scenario.id !== `s1.${scenario.name}.v1`)) throw new Error("scenario corpus membership is not the exact O5a seven-name/ID join");
+if (JSON.stringify(scenarioCorpus).includes("legacyBuilder") || JSON.stringify(scenarioCorpus).includes("setupKind") || JSON.stringify(scenarioCorpus).includes("hashes") || JSON.stringify(scenarioCorpus).includes("states")) throw new Error("scenario corpus contains forbidden expected-output or name-dispatch data");
+const scenarioAdapter = readFileSync(join(import.meta.dir, "..", "adapter/scenario.c"), "utf8");
+if (scenarioAdapter.includes("strcmp(record->name") || scenarioAdapter.includes("legacyBuilder") || scenarioAdapter.includes("setupKind")) throw new Error("scenario C adapter contains forbidden name dispatch");
+if (!oracle.includes("scenarioMigrate") || !oracle.includes("serializationOnly") || !oracle.includes("legacySha")) throw new Error("migration-only scenario runner is incomplete");
 if (PATCHES.length < 20 || PATCHES.some((patch) => !patch.marker.startsWith("recording.") && !patch.marker.startsWith("solver.") && !patch.marker.startsWith("physics.") && !patch.marker.startsWith("o4."))) throw new Error("O3/O4 hook markers are incomplete");
 if (DECLARED_SYMBOLS.length !== 5 || DECLARED_SYMBOLS.some((declared) => !declared.vector.endsWith(".v2"))) throw new Error("O3 declared provenance is incomplete");
 if (O4_DECLARED_SYMBOLS.length !== 12 || O4_DECLARED_SYMBOLS.some((declared) => !declared.vector.startsWith("o4."))) throw new Error("O4 declared provenance is incomplete");
