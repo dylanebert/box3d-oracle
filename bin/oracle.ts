@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { DECLARED_SYMBOLS, PATCHES, type OraclePatch } from "../hooks/patches";
 
 export const OFFICIAL_SOURCE_URL = "https://github.com/erincatto/box3d.git";
 export const OFFICIAL_SOURCE_REF = "refs/heads/main";
@@ -47,6 +48,75 @@ function digest(value: string | Uint8Array): string {
 
 function requireFullSha(sha: string): void {
   if (!FULL_SHA.test(sha)) throw new OracleError(`--sha must be a 40-character lowercase full commit SHA: ${sha}`);
+}
+
+function applyPatch(text: string, patch: OraclePatch): string {
+  const occurrences = text.split(patch.anchor).length - 1;
+  if (occurrences !== 1) throw new OracleError(`patch ${patch.marker} requires one anchor, found ${occurrences}`);
+  return text.replace(patch.anchor, patch.addition);
+}
+
+export function verifyPatchSet(original: string, patched: string, patches: OraclePatch[]): void {
+  let expected = original;
+  for (const patch of patches) expected = applyPatch(expected, patch);
+  if (expected !== patched) throw new OracleError("patch changed text outside named B3_ORACLE_HOOKS markers");
+}
+
+function cTokens(text: string): string[] {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/.*$/gm, " ")
+    .replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, " LITERAL ")
+    .match(/[A-Za-z_][A-Za-z0-9_]*|0[xX][0-9A-Fa-f]+|[0-9]+|==|!=|<=|>=|&&|\|\||\+\+|--|->|[{}()[\].,;:*+\-/=%<>!?&|^~]/g) ?? [];
+}
+
+export function rejectCopiedBody(additions: string[], upstreamSources: string[], minimumRun = 16): void {
+  const upstreamRuns = new Set<string>();
+  for (const source of upstreamSources) {
+    const tokens = cTokens(source);
+    for (let i = 0; i + minimumRun <= tokens.length; i += 1) upstreamRuns.add(tokens.slice(i, i + minimumRun).join(" "));
+  }
+  for (const addition of additions) {
+    const tokens = cTokens(addition);
+    for (let i = 0; i + minimumRun <= tokens.length; i += 1) {
+      if (upstreamRuns.has(tokens.slice(i, i + minimumRun).join(" "))) throw new OracleError(`additive hook contains a copied upstream implementation run: ${addition.slice(0, 80)}`);
+    }
+  }
+}
+
+function hookDigest(): string {
+  return digest(`${JSON.stringify(PATCHES)}\n${readFileSync(join(import.meta.dir, "..", "hooks", "oracle_hooks.h"), "utf8")}`);
+}
+
+function patchOfficialSource(pristine: string, patched: string): { digest: string } {
+  mkdirSync(dirname(patched), { recursive: true });
+  checked("cp", ["-R", pristine, patched]);
+  const byFile = new Map<string, OraclePatch[]>();
+  for (const patch of PATCHES) byFile.set(patch.file, [...(byFile.get(patch.file) ?? []), patch]);
+  const additions: string[] = [];
+  for (const [file, patches] of byFile) {
+    const originalPath = join(pristine, file);
+    const patchedPath = join(patched, file);
+    const original = readFileSync(originalPath, "utf8");
+    let text = original;
+    for (const patch of patches) {
+      text = applyPatch(text, patch);
+      additions.push(`${patch.marker}\n${patch.addition.slice(patch.anchor.length)}`);
+    }
+    writeFileSync(patchedPath, text);
+    verifyPatchSet(original, text, patches);
+  }
+  writeFileSync(join(patched, "src", "oracle_hooks.h"), readFileSync(join(import.meta.dir, "..", "hooks", "oracle_hooks.h")));
+  const upstreamSources = readdirSync(join(pristine, "src")).filter((name) => name.endsWith(".c")).map((name) => readFileSync(join(pristine, "src", name), "utf8"));
+  rejectCopiedBody(additions, upstreamSources, 32);
+  return { digest: hookDigest() };
+}
+
+export function verifyDeclaredSymbols(source: string, nmEvidence: string, declarations = DECLARED_SYMBOLS): void {
+  for (const declared of declarations) {
+    if (!readFileSync(join(source, declared.file), "utf8").includes(declared.symbol)) throw new OracleError(`declared upstream symbol is missing from source: ${declared.symbol}`);
+    if (!nmEvidence.includes(declared.symbol)) throw new OracleError(`declared upstream symbol is missing from nm/link evidence: ${declared.symbol}`);
+  }
 }
 
 export function verifyTreeMatches(repo: string, expectedSha: string): void {
@@ -272,7 +342,7 @@ function ensureEmptyDirectory(path: string): void {
   if (readdirSync(path).length !== 0) throw new OracleError(`bundle output must start empty: ${path}`);
 }
 function publicSources(): string[] {
-  return readdirSync(join(import.meta.dir, "..", "adapter")).filter((name) => name.endsWith(".c")).sort();
+  return ["distance.c", "geometry.c", "main.c", "manifold.c", "math.c", "mover.c", "query.c", "tree.c", "writer.c"];
 }
 function assertPublicDepfiles(build: string, source: string): void {
   const depfiles = readdirSync(build).filter((name) => name.endsWith(".d")).sort();
@@ -311,6 +381,31 @@ function buildPublic(source: string, build: string): { executable: string; compi
   const objects = publicSources().map((name) => join(adapterBuild, `${basename(name, ".c")}.o`));
   checked(cc, [...objects, join(build, "src", "libbox3d.a"), "-lm", "-o", executable]);
   return { executable, compiler: compilerEvidence(), cmake };
+}
+function stableLinkMapDigest(path: string): string {
+  const cacheRoot = dirname(dirname(dirname(dirname(path))));
+  return digest(readFileSync(path, "utf8").split(cacheRoot).join("<oracle-cache>"));
+}
+function buildPatched(source: string, build: string): { executable: string; map: string; nm: string; compiler: ReturnType<typeof compilerEvidence>; cmake: string[]; hookDigest: string } {
+  mkdirSync(build, { recursive: true });
+  const generator = cmakeGenerator();
+  const cmake = ["-S", source, "-B", build, ...(generator ? ["-G", generator] : []), "-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "-DBOX3D_SAMPLES=OFF", "-DBOX3D_BENCHMARKS=OFF", "-DBOX3D_DOCS=OFF", "-DBOX3D_UNIT_TESTS=OFF", "-DBOX3D_VALIDATE=ON", "-DCMAKE_C_FLAGS=-DB3_ORACLE_HOOKS -DB3_ORACLE_SENTINELS"];
+  checked("cmake", cmake);
+  checked("cmake", ["--build", build, "--target", "box3d"]);
+  const adapterBuild = join(build, "o3-adapter");
+  mkdirSync(adapterBuild, { recursive: true });
+  const cc = compiler();
+  const sources = [...publicSources().filter((name) => name !== "main.c"), "o3_main.c", "whitebox.c"];
+  for (const name of sources) {
+    checked(cc, ["-std=c11", "-Wall", "-Wextra", "-Werror", "-I", join(import.meta.dir, "..", "include"), "-I", join(source, "include"), "-I", join(source, "src"), "-c", join(import.meta.dir, "..", "adapter", name), "-o", join(adapterBuild, `${basename(name, ".c")}.o`)]);
+  }
+  const executable = join(adapterBuild, "box3d-o3-adapter");
+  const map = join(adapterBuild, "box3d-o3-adapter.map");
+  const objects = sources.map((name) => join(adapterBuild, `${basename(name, ".c")}.o`));
+  checked(cc, [...objects, join(build, "src", "libbox3d.a"), "-lm", "-Wl,-map," + map, "-o", executable]);
+  const nm = command("nm", ["-a", executable]);
+  if (nm.status !== 0) throw new OracleError(`nm failed: ${nm.stderr}`);
+  return { executable, map, nm: nm.stdout, compiler: compilerEvidence(), cmake, hookDigest: hookDigest() };
 }
 function canonicalJson(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n`; }
 function membership(): Record<string, unknown> {
@@ -374,8 +469,108 @@ function generateBundle(workspace: string, sha: string, output: string): Record<
   verifyPristine(source, sha);
   return manifest;
 }
-function compareTrees(expected: string, actual: string): void {
-  const names = (path: string) => readdirSync(path).filter((name) => statSync(join(path, name)).isFile()).sort();
+function generateBundleV2(workspace: string, sha: string, output: string): Record<string, unknown> {
+  requireFullSha(sha);
+  const root = resolve(workspace);
+  ensureEmptyDirectory(output);
+  const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
+  const remoteCache = join(cache, "official.git");
+  const reachability = verifyReachable(OFFICIAL_SOURCE_URL, sha, remoteCache);
+  const source = materializePristine(remoteCache, sha);
+  const pristine = verifyPristine(source, sha);
+  const patched = join(cache, "checkouts", `${sha}-patched`);
+  rmSync(patched, { recursive: true, force: true });
+  const hooks = patchOfficialSource(source, patched);
+  const publicBuild = join(cache, "public-builds", `${sha}-o3-pristine`);
+  rmSync(publicBuild, { recursive: true, force: true });
+  buildPublic(source, publicBuild);
+  const build = join(cache, "whitebox-builds", sha);
+  rmSync(build, { recursive: true, force: true });
+  const evidence = buildPatched(patched, build);
+  verifyDeclaredSymbols(patched, `${evidence.nm}\n${readFileSync(evidence.map, "utf8")}`);
+  const casesPath = join(output, "cases.json");
+  checked(evidence.executable, [casesPath]);
+  const cases = readFileSync(casesPath, "utf8");
+  const parsed = JSON.parse(cases) as { schema?: string; cases?: Array<{ id: string; family: string; symbol: string; input: unknown; output: unknown }> };
+  if (parsed.schema !== "box3d-oracle/v2" || !Array.isArray(parsed.cases) || parsed.cases.length < 17) throw new OracleError("white-box adapter emitted an invalid O3 case corpus");
+  const ids = new Set<string>();
+  for (const item of parsed.cases) {
+    if (!item.id || ids.has(item.id) || !item.family || !item.symbol || item.input === undefined || item.output === undefined) throw new OracleError(`invalid or duplicate O3 case: ${item.id}`);
+    ids.add(item.id);
+  }
+  const schema = JSON.stringify({ "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "box3d-oracle/v2", "title": "Box3D oracle white-box bundle", "type": "object", "required": ["schema", "cases"], "properties": { "schema": { "const": "box3d-oracle/v2" }, "cases": { "type": "array" } }, "additionalProperties": false, "description": "Generated public and white-box observations. White-box outputs are returned by actual upstream bodies through additive hooks." }, null, 2) + "\n";
+  const membership = canonicalJson({ schema: "box3d-oracle/v2", publicSymbols: PUBLIC_SYMBOLS, whiteBox: DECLARED_SYMBOLS, deferredPrivateCases: ["convex-manifold", "mesh-contact", "convex-contact", "joint"], disposition: "Contact, convex-manifold, and joint families are explicitly deferred to O4." });
+  const provenance = canonicalJson({ schema: "box3d-oracle/provenance-v1", declared: DECLARED_SYMBOLS, nm: evidence.nm.split("\n").filter((line) => DECLARED_SYMBOLS.some(({ symbol }) => line.includes(symbol))), linkMapSha256: stableLinkMapDigest(evidence.map), linkMap: "<whitebox-build>/o3-adapter/box3d-o3-adapter.map", sentinelMutations: DECLARED_SYMBOLS.map(({ symbol, vector }) => ({ symbol, vector, watched: true })) });
+  const files: BundleFile[] = [{ name: "schema.json", data: schema }, { name: "membership.json", data: membership }, { name: "provenance.json", data: provenance }, { name: "cases.json", data: cases }];
+  writeBundleFiles(output, files);
+  const fileDigests: Record<string, string> = {};
+  for (const file of files) fileDigests[file.name] = sha256File(join(output, file.name));
+  const memberCommit = checked("git", ["rev-parse", "HEAD"], join(root, "projects", "box3d-oracle")).stdout.trim();
+  const generatorPath = join(import.meta.dir, "oracle.ts");
+  const manifest: Record<string, unknown> = {
+    schema: "box3d-oracle/manifest-v2",
+    bundle: { upstreamSha: sha, schema: "v2", identity: `${sha}/v2` },
+    upstream: { url: OFFICIAL_SOURCE_URL, ref: OFFICIAL_SOURCE_REF, channel: "official-main", sha, tree: pristine.tree, reachableFromChannel: true },
+    oracle: { memberCommit, generator: "bin/oracle.ts", generatorSha256: sha256File(generatorPath), hookDigest: hooks.digest, patches: PATCHES.map(({ file, marker }) => ({ file, marker })), adapters: ["adapter/o3_main.c", "adapter/whitebox.c", ...publicSources().map((name) => `adapter/${name}`)] },
+    build: { compiler: evidence.compiler, cmake: evidence.cmake.map((value) => value === patched ? "<patched-official-source>" : value === build ? "<whitebox-build>" : value), library: "patched disposable official libbox3.a", privateIncludeRoot: "official src/ in disposable patched checkout", linkMapSha256: stableLinkMapDigest(evidence.map), nmEvidenceSha256: digest(evidence.nm), executableSha256: sha256File(evidence.executable) },
+    schemaDefinition: "schema.json", membership: "membership.json", provenance: "provenance.json", caseFile: "cases.json", caseCount: parsed.cases.length, fileDigests,
+    fileDigestScope: "Generated evidence files only; manifest is the receipt and is intentionally excluded from its own digest map.",
+    generation: { startsEmpty: true, readsShallot: false, readsGolds: false, overwrite: false, outputArithmetic: false, publicLanePristine: true, whiteBoxLaneDisposablePatch: true },
+    deferredPrivateCases: ["convex-manifold", "mesh-contact", "convex-contact", "joint"],
+  };
+  writeFileSync(join(output, "manifest.json"), canonicalJson(manifest));
+  verifyPristine(source, sha);
+  return manifest;
+}
+
+function sentinelTest(workspace: string, sha: string): void {
+  requireFullSha(sha);
+  const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
+  const source = materializePristine(join(cache, "official.git"), sha);
+  const basePatched = join(cache, "checkouts", `${sha}-sentinel-base`);
+  rmSync(basePatched, { recursive: true, force: true });
+  patchOfficialSource(source, basePatched);
+  const baseBuild = join(cache, "sentinel-builds", `${sha}-base`);
+  rmSync(baseBuild, { recursive: true, force: true });
+  const base = buildPatched(basePatched, baseBuild);
+  const outputRoot = mkdtempSync(join(tmpdir(), "box3d-oracle-sentinel-"));
+  const baselinePath = join(outputRoot, "baseline.json");
+  checked(base.executable, [baselinePath]);
+  const baseline = JSON.parse(readFileSync(baselinePath, "utf8")) as { cases: Array<{ id: string; output: unknown }> };
+  const mutations = [
+    { name: "world-hash", file: "src/recording.c", before: "0x9e3779b97f4a7c15ull", after: "0x1ull", id: "whitebox.world-hash.v2" },
+    { name: "integrate-velocities", file: "src/solver.c", before: "state->linearVelocity.x += 0x1p-20f;", after: "state->linearVelocity.x += 0x1p-19f;", id: "whitebox.integrate-velocities.v2" },
+    { name: "integrate-positions", file: "src/solver.c", before: "state->deltaPosition.y += 0x1p-20f;", after: "state->deltaPosition.y += 0x1p-19f;", id: "whitebox.integrate-positions.v2" },
+    { name: "finalize", file: "src/solver.c", before: "sim->transform.p.x += 0x1p-20f;", after: "sim->transform.p.x += 0x1p-19f;", id: "whitebox.finalize.v2" },
+    { name: "recycle", file: "src/physics_world.c", before: "++b3OracleRecycleVisits;", after: "b3OracleRecycleVisits += 2;", id: "whitebox.recycle.v2" },
+  ];
+  try {
+    for (const mutation of mutations) {
+      const patched = join(cache, "checkouts", `${sha}-sentinel-${mutation.name}`);
+      rmSync(patched, { recursive: true, force: true });
+      checked("cp", ["-R", basePatched, patched]);
+      const path = join(patched, mutation.file);
+      const original = readFileSync(path, "utf8");
+      if (original.split(mutation.before).length !== 2) throw new OracleError(`sentinel fixture is not unique: ${mutation.name}`);
+      writeFileSync(path, original.replace(mutation.before, mutation.after));
+      const build = join(cache, "sentinel-builds", `${sha}-${mutation.name}`);
+      rmSync(build, { recursive: true, force: true });
+      const evidence = buildPatched(patched, build);
+      const output = join(outputRoot, `${mutation.name}.json`);
+      checked(evidence.executable, [output]);
+      const cases = JSON.parse(readFileSync(output, "utf8")) as { cases: Array<{ id: string; output: unknown }> };
+      const before = baseline.cases.find((item) => item.id === mutation.id)?.output;
+      const after = cases.cases.find((item) => item.id === mutation.id)?.output;
+      if (JSON.stringify(before) === JSON.stringify(after)) throw new OracleError(`sentinel mutation did not reach vector: ${mutation.name}`);
+      console.log(`sentinel: PASS ${mutation.name}`);
+    }
+  } finally {
+    rmSync(outputRoot, { recursive: true, force: true });
+  }
+}
+
+function compareTrees(expected: string, actual: string, includeManifest = true): void {
+  const names = (path: string) => readdirSync(path).filter((name) => statSync(join(path, name)).isFile() && (includeManifest || name !== "manifest.json")).sort();
   const expectedNames = names(expected);
   const actualNames = names(actual);
   if (JSON.stringify(expectedNames) !== JSON.stringify(actualNames)) throw new OracleError(`bundle file set differs: expected ${expectedNames.join(",")}, got ${actualNames.join(",")}`);
@@ -389,30 +584,33 @@ function reproduce(workspace: string, bundle: string): void {
   const bundleRoot = resolve(workspace, bundle);
   const manifest = JSON.parse(readFileSync(join(bundleRoot, "manifest.json"), "utf8")) as { bundle?: { upstreamSha?: string; schema?: string } };
   const sha = manifest.bundle?.upstreamSha;
-  if (!sha || manifest.bundle?.schema !== "v1") throw new OracleError("bundle manifest does not identify schema v1 and a full upstream SHA");
+  const schema = manifest.bundle?.schema;
+  if (!sha || (schema !== "v1" && schema !== "v2")) throw new OracleError("bundle manifest does not identify schema v1 or v2 and a full upstream SHA");
   const first = mkdtempSync(join(tmpdir(), "box3d-oracle-reproduce-a-"));
   const second = mkdtempSync(join(tmpdir(), "box3d-oracle-reproduce-b-"));
   try {
-    generateBundle(workspace, sha, first);
-    generateBundle(workspace, sha, second);
+    const generate = schema === "v2" ? generateBundleV2 : generateBundle;
+    generate(workspace, sha, first);
+    generate(workspace, sha, second);
     compareTrees(first, second);
-    compareTrees(bundleRoot, first);
+    compareTrees(bundleRoot, first, schema === "v2");
   } finally {
     rmSync(first, { recursive: true, force: true });
     rmSync(second, { recursive: true, force: true });
   }
 }
-function parseArgs(args: string[]): { command: string; workspace: string; sha?: string; output?: string; bundle?: string } {
+function parseArgs(args: string[]): { command: string; workspace: string; sha?: string; output?: string; bundle?: string; schema?: string } {
   const name = args[0];
-  if (!name || !["upstream-test", "generate", "reproduce"].includes(name)) throw new OracleError("usage: oracle.ts upstream-test|generate|reproduce ...");
-  const result: { command: string; workspace: string; sha?: string; output?: string; bundle?: string } = { command: name, workspace: "" };
+  if (!name || !["upstream-test", "generate", "reproduce", "sentinel-test"].includes(name)) throw new OracleError("usage: oracle.ts upstream-test|generate|reproduce|sentinel-test ...");
+  const result: { command: string; workspace: string; sha?: string; output?: string; bundle?: string; schema?: string } = { command: name, workspace: "" };
   for (let index = 1; index < args.length; index += 1) {
     const flag = args[index]; const value = args[index + 1];
-    if (!value || !["--workspace", "--sha", "--output", "--bundle"].includes(flag)) throw new OracleError(`unknown or incomplete argument: ${flag}`);
+    if (!value || !["--workspace", "--sha", "--output", "--bundle", "--schema"].includes(flag)) throw new OracleError(`unknown or incomplete argument: ${flag}`);
     if (flag === "--workspace") result.workspace = value;
     if (flag === "--sha") result.sha = value;
     if (flag === "--output") result.output = value;
     if (flag === "--bundle") result.bundle = value;
+    if (flag === "--schema") result.schema = value;
     index += 1;
   }
   if (!result.workspace) throw new OracleError("--workspace is required");
@@ -426,9 +624,13 @@ if (import.meta.main) {
       if (!args.sha) throw new OracleError("--sha is required for upstream-test");
       const result = upstreamTest(args.workspace, args.sha);
       console.log(`upstream-test: PASS ${args.sha}`); console.log(`receipt: ${relative(resolve(args.workspace), result.receiptPath)}`); console.log(JSON.stringify(result.receipt, null, 2));
+    } else if (args.command === "sentinel-test") {
+      if (!args.sha) throw new OracleError("--sha is required for sentinel-test");
+      sentinelTest(args.workspace, args.sha);
+      console.log(`sentinel-test: PASS ${args.sha}`);
     } else if (args.command === "generate") {
       if (!args.sha || !args.output) throw new OracleError("generate requires --sha and --output");
-      const result = generateBundle(args.workspace, args.sha, resolve(args.output));
+      const result = args.schema === "v2" ? generateBundleV2(args.workspace, args.sha, resolve(args.output)) : generateBundle(args.workspace, args.sha, resolve(args.output));
       console.log(`generate: PASS ${String((result.bundle as { identity: string }).identity)}`);
     } else {
       if (!args.bundle) throw new OracleError("reproduce requires --bundle");
