@@ -216484,7 +216484,8 @@
           "resource": "r1",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216493,7 +216494,8 @@
           "resource": "r2",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216502,7 +216504,8 @@
           "resource": "r3",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216511,7 +216514,8 @@
           "resource": "r4",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216520,7 +216524,8 @@
           "resource": "r5",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216529,7 +216534,8 @@
           "resource": "r6",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216538,7 +216544,8 @@
           "resource": "r7",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216547,7 +216554,8 @@
           "resource": "r8",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216556,7 +216564,8 @@
           "resource": "r9",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216565,7 +216574,8 @@
           "resource": "r10",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216574,7 +216584,8 @@
           "resource": "r11",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216583,7 +216594,8 @@
           "resource": "r12",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216592,7 +216604,8 @@
           "resource": "r13",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216601,7 +216614,8 @@
           "resource": "r14",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216610,7 +216624,8 @@
           "resource": "r15",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216619,7 +216634,8 @@
           "resource": "r16",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216628,7 +216644,8 @@
           "resource": "r17",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216637,7 +216654,8 @@
           "resource": "r18",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216646,7 +216664,8 @@
           "resource": "r19",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216655,7 +216674,8 @@
           "resource": "r20",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216664,7 +216684,8 @@
           "resource": "r21",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216673,7 +216694,8 @@
           "resource": "r22",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "body.apply-mass",
@@ -216723,7 +216745,8 @@
           "resource": "r1",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216732,7 +216755,8 @@
           "resource": "r2",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216741,7 +216765,8 @@
           "resource": "r3",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216750,7 +216775,8 @@
           "resource": "r4",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216759,7 +216785,8 @@
           "resource": "r5",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216768,7 +216795,8 @@
           "resource": "r6",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216777,7 +216805,8 @@
           "resource": "r7",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216786,7 +216815,8 @@
           "resource": "r8",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216795,7 +216825,8 @@
           "resource": "r9",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216804,7 +216835,8 @@
           "resource": "r10",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216813,7 +216845,8 @@
           "resource": "r11",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216822,7 +216855,8 @@
           "resource": "r12",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216831,7 +216865,8 @@
           "resource": "r13",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216840,7 +216875,8 @@
           "resource": "r14",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216849,7 +216885,8 @@
           "resource": "r15",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216858,7 +216895,8 @@
           "resource": "r16",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216867,7 +216905,8 @@
           "resource": "r17",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216876,7 +216915,8 @@
           "resource": "r18",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216885,7 +216925,8 @@
           "resource": "r19",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216894,7 +216935,8 @@
           "resource": "r20",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216903,7 +216945,8 @@
           "resource": "r21",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216912,7 +216955,8 @@
           "resource": "r22",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "body.apply-mass",
@@ -216962,7 +217006,8 @@
           "resource": "r1",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216971,7 +217016,8 @@
           "resource": "r2",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216980,7 +217026,8 @@
           "resource": "r3",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216989,7 +217036,8 @@
           "resource": "r4",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -216998,7 +217046,8 @@
           "resource": "r5",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217007,7 +217056,8 @@
           "resource": "r6",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217016,7 +217066,8 @@
           "resource": "r7",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217025,7 +217076,8 @@
           "resource": "r8",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217034,7 +217086,8 @@
           "resource": "r9",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217043,7 +217096,8 @@
           "resource": "r10",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217052,7 +217106,8 @@
           "resource": "r11",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217061,7 +217116,8 @@
           "resource": "r12",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217070,7 +217126,8 @@
           "resource": "r13",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217079,7 +217136,8 @@
           "resource": "r14",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217088,7 +217146,8 @@
           "resource": "r15",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217097,7 +217156,8 @@
           "resource": "r16",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217106,7 +217166,8 @@
           "resource": "r17",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217115,7 +217176,8 @@
           "resource": "r18",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217124,7 +217186,8 @@
           "resource": "r19",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217133,7 +217196,8 @@
           "resource": "r20",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217142,7 +217206,8 @@
           "resource": "r21",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "shape.create",
@@ -217151,7 +217216,8 @@
           "resource": "r22",
           "kind": "hull",
           "density": "0x3f800000",
-          "rollingResistance": "0x3d4ccccd"
+          "rollingResistance": "0x3d4ccccd",
+          "friction": "0x3f666666"
         },
         {
           "op": "body.apply-mass",
@@ -219172,233 +219238,73 @@
           "enableContinuous": false
         },
         {
-          "op": "resource.hull",
+          "op": "resource.box",
           "id": "r0",
-          "points": [
-            [
-              "0xc2f00000",
-              "0xbf800000",
-              "0xc2f00000"
-            ],
-            [
-              "0x42f00000",
-              "0xbf800000",
-              "0xc2f00000"
-            ],
-            [
-              "0x42f00000",
-              "0x3f800000",
-              "0xc2f00000"
-            ],
-            [
-              "0xc2f00000",
-              "0x3f800000",
-              "0xc2f00000"
-            ],
-            [
-              "0xc2f00000",
-              "0xbf800000",
-              "0x42f00000"
-            ],
-            [
-              "0x42f00000",
-              "0xbf800000",
-              "0x42f00000"
-            ],
-            [
-              "0x42f00000",
-              "0x3f800000",
-              "0x42f00000"
-            ],
-            [
-              "0xc2f00000",
-              "0x3f800000",
-              "0x42f00000"
-            ]
+          "halfExtents": [
+            "0x42f00000",
+            "0x3f800000",
+            "0x42f00000"
+          ],
+          "center": [
+            "0x00000000",
+            "0x00000000",
+            "0x00000000"
           ]
         },
         {
-          "op": "resource.hull",
+          "op": "resource.box",
           "id": "r1",
-          "points": [
-            [
-              "0xc24c0000",
-              "0x00000000",
-              "0xc2480000"
-            ],
-            [
-              "0xc2440000",
-              "0x00000000",
-              "0xc2480000"
-            ],
-            [
-              "0xc2440000",
-              "0x41800000",
-              "0xc2480000"
-            ],
-            [
-              "0xc24c0000",
-              "0x41800000",
-              "0xc2480000"
-            ],
-            [
-              "0xc24c0000",
-              "0x00000000",
-              "0x42480000"
-            ],
-            [
-              "0xc2440000",
-              "0x00000000",
-              "0x42480000"
-            ],
-            [
-              "0xc2440000",
-              "0x41800000",
-              "0x42480000"
-            ],
-            [
-              "0xc24c0000",
-              "0x41800000",
-              "0x42480000"
-            ]
+          "halfExtents": [
+            "0x3f800000",
+            "0x41000000",
+            "0x42480000"
+          ],
+          "center": [
+            "0xc2480000",
+            "0x41000000",
+            "0x00000000"
           ]
         },
         {
-          "op": "resource.hull",
+          "op": "resource.box",
           "id": "r2",
-          "points": [
-            [
-              "0x42440000",
-              "0x00000000",
-              "0xc2480000"
-            ],
-            [
-              "0x424c0000",
-              "0x00000000",
-              "0xc2480000"
-            ],
-            [
-              "0x424c0000",
-              "0x41800000",
-              "0xc2480000"
-            ],
-            [
-              "0x42440000",
-              "0x41800000",
-              "0xc2480000"
-            ],
-            [
-              "0x42440000",
-              "0x00000000",
-              "0x42480000"
-            ],
-            [
-              "0x424c0000",
-              "0x00000000",
-              "0x42480000"
-            ],
-            [
-              "0x424c0000",
-              "0x41800000",
-              "0x42480000"
-            ],
-            [
-              "0x42440000",
-              "0x41800000",
-              "0x42480000"
-            ]
+          "halfExtents": [
+            "0x3f800000",
+            "0x41000000",
+            "0x42480000"
+          ],
+          "center": [
+            "0x42480000",
+            "0x41000000",
+            "0x00000000"
           ]
         },
         {
-          "op": "resource.hull",
+          "op": "resource.box",
           "id": "r3",
-          "points": [
-            [
-              "0xc2480000",
-              "0x00000000",
-              "0xc24c0000"
-            ],
-            [
-              "0x42480000",
-              "0x00000000",
-              "0xc24c0000"
-            ],
-            [
-              "0x42480000",
-              "0x41800000",
-              "0xc24c0000"
-            ],
-            [
-              "0xc2480000",
-              "0x41800000",
-              "0xc24c0000"
-            ],
-            [
-              "0xc2480000",
-              "0x00000000",
-              "0xc2440000"
-            ],
-            [
-              "0x42480000",
-              "0x00000000",
-              "0xc2440000"
-            ],
-            [
-              "0x42480000",
-              "0x41800000",
-              "0xc2440000"
-            ],
-            [
-              "0xc2480000",
-              "0x41800000",
-              "0xc2440000"
-            ]
+          "halfExtents": [
+            "0x42480000",
+            "0x41000000",
+            "0x3f800000"
+          ],
+          "center": [
+            "0x00000000",
+            "0x41000000",
+            "0xc2480000"
           ]
         },
         {
-          "op": "resource.hull",
+          "op": "resource.box",
           "id": "r4",
-          "points": [
-            [
-              "0xc2480000",
-              "0x00000000",
-              "0x42440000"
-            ],
-            [
-              "0x42480000",
-              "0x00000000",
-              "0x42440000"
-            ],
-            [
-              "0x42480000",
-              "0x41800000",
-              "0x42440000"
-            ],
-            [
-              "0xc2480000",
-              "0x41800000",
-              "0x42440000"
-            ],
-            [
-              "0xc2480000",
-              "0x00000000",
-              "0x424c0000"
-            ],
-            [
-              "0x42480000",
-              "0x00000000",
-              "0x424c0000"
-            ],
-            [
-              "0x42480000",
-              "0x41800000",
-              "0x424c0000"
-            ],
-            [
-              "0xc2480000",
-              "0x41800000",
-              "0x424c0000"
-            ]
+          "halfExtents": [
+            "0x42480000",
+            "0x41000000",
+            "0x3f800000"
+          ],
+          "center": [
+            "0x00000000",
+            "0x41000000",
+            "0x42480000"
           ]
         },
         {
@@ -219648,35 +219554,35 @@
           "id": "s656",
           "body": "b0",
           "resource": "r0",
-          "kind": "hull"
+          "kind": "box"
         },
         {
           "op": "shape.create",
           "id": "s657",
           "body": "b0",
           "resource": "r1",
-          "kind": "hull"
+          "kind": "box"
         },
         {
           "op": "shape.create",
           "id": "s658",
           "body": "b0",
           "resource": "r2",
-          "kind": "hull"
+          "kind": "box"
         },
         {
           "op": "shape.create",
           "id": "s659",
           "body": "b0",
           "resource": "r3",
-          "kind": "hull"
+          "kind": "box"
         },
         {
           "op": "shape.create",
           "id": "s660",
           "body": "b0",
           "resource": "r4",
-          "kind": "hull"
+          "kind": "box"
         },
         {
           "op": "body.create",
