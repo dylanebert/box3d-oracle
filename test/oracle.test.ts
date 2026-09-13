@@ -1,9 +1,10 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { expect, test } from "bun:test";
-import { verifyPristine, verifyReachable, verifyTreeMatches, runUpstreamTest } from "../bin/oracle";
+import { rejectCopiedBody, verifyDeclaredSymbols, verifyPatchSet, verifyPristine, verifyReachable, verifyTreeMatches, runUpstreamTest } from "../bin/oracle";
+import { DECLARED_SYMBOLS, PATCHES } from "../hooks/patches";
 
 function git(cwd: string, ...args: string[]): string {
   const result = spawnSync("git", args, {
@@ -61,6 +62,32 @@ test("pristine verification rejects dirty materializations and tree mismatches",
     expect(() => verifyTreeMatches(root, sha)).toThrow(/tree mismatch/);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("marker patch verifier rejects an outside-marker edit", () => {
+  const fixture = PATCHES[0];
+  const original = fixture.anchor + "tail\\n";
+  const patched = fixture.addition + "changed\\n";
+  expect(() => verifyPatchSet(original, patched, [fixture])).toThrow(/outside named/);
+});
+
+test("token detector rejects a substantive copied upstream body fixture", () => {
+  const body = "static void copied(void) { int i = 0; i += 1; i += 2; i += 3; i += 4; i += 5; i += 6; i += 7; i += 8; i += 9; return; }";
+  expect(() => rejectCopiedBody([body], [body])).toThrow(/copied upstream/);
+});
+
+test("declared provenance rejects a missing or wrong symbol", () => {
+  const source = mkdtempSync(join(tmpdir(), "box3d-oracle-provenance-"));
+  try {
+    mkdirSync(join(source, "src"), { recursive: true });
+    for (const declared of DECLARED_SYMBOLS) {
+      const path = join(source, declared.file);
+      writeFileSync(path, `${existsSync(path) ? readFileSync(path, "utf8") : ""} ${declared.symbol}`);
+    }
+    expect(() => verifyDeclaredSymbols(source, "b3HashWorldState")).toThrow(/missing from nm/);
+  } finally {
+    rmSync(source, { recursive: true, force: true });
   }
 });
 

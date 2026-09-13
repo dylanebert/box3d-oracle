@@ -10,7 +10,7 @@ The only active source authority is `https://github.com/erincatto/box3d.git`, `r
 
 The O2 corpus is split by public symbol across `adapter/math.c`, `geometry.c`, `distance.c`, `tree.c`, `manifold.c`, `query.c`, and `mover.c`. It covers `b3Add`, `b3Dot`, `b3ComputeCosSin`, `b3ComputeSphereAABB`, `b3ComputeCapsuleMass`, `b3PointToSegmentDistance`, `b3ShapeDistance`, `b3DynamicTree_Query`, `b3CollideSpheres`, `b3RayCastSphere`, `b3SolvePlanes`, and `b3ClipVector`. Each case has a stable logical ID, explicit input and output records, and fixed-width hexadecimal bits. f32, u32, and signed i32 records use `0x` plus eight hexadecimal digits; u64 records use sixteen digits.
 
-Every public adapter compile uses only this repository's include directory and the official checkout's `include/box3d`. The generated depfiles reject upstream `src/` paths. The check also compiles a watched private-include mutation and requires it to fail before generation. Private world hashes, integration phases, contact families, recycle/finalize observations, and joint observations are recorded as deferred O3 membership, not public O2 cases.
+Every public adapter compile uses only this repository's include directory and the official checkout's `include/box3d`. The generated depfiles reject upstream `src/` paths. The check also compiles a watched private-include mutation and requires it to fail before generation. O3 adds a separate v2 bundle lane. A disposable copy receives only additive `B3_ORACLE_HOOKS` marker patches. The pristine copy remains the public/self-test lane. The v2 adapter calls actual `b3HashWorldState`, `b3IntegrateVelocitiesTask`, `b3IntegratePositionsTask`, `b3FinalizeBodiesTask`, and the contact recycle path through real upstream structs and contexts. Contact, convex-manifold, mesh-contact, and joint families remain explicitly deferred to O4.
 
 ## Command
 
@@ -35,7 +35,7 @@ bun projects/box3d-oracle/bin/oracle.ts generate \\
   --output /tmp/box3d-bundle
 ```
 
-`reproduce --workspace <kex-root> --bundle <bundle>` creates two fresh bundles under distinct `/tmp` directories, checks their byte equality, then compares the result with the committed bundle. Generation refuses a non-empty output and never reads Shallot files or existing golds. The bundle manifest records the official URL, channel, SHA/tree, oracle commit, compiler/CMake options, schema, executable digest, membership, and generated-file digests.
+`reproduce --workspace <kex-root> --bundle <bundle>` creates two fresh bundles under distinct `/tmp` directories, checks their byte equality, then compares the result with the committed bundle. Generation refuses a non-empty output and never reads Shallot files or existing golds. The bundle manifest records the official URL, channel, SHA/tree, oracle commit, compiler/CMake options, schema, executable digest, membership, patch digest, link-map/`nm` provenance, and generated-file digests. The default `generate` command remains v1 for O2 reproduction; pass `--schema v2` for O3.
 
 ## Local Checks
 
@@ -44,4 +44,4 @@ bun run check
 bun run test
 ```
 
-The tests create temporary fake Git remotes and cover an unreachable commit, a dirty/tree-mismatched checkout, and a failing upstream test executable.
+The tests create temporary fake Git remotes and cover an unreachable commit, a dirty/tree-mismatched checkout, a failing upstream test executable, outside-marker edits, copied-body fixtures, missing provenance, and sentinel declarations.

@@ -13,6 +13,7 @@ void oracle_write_tree(FILE* out, bool* first);
 void oracle_write_manifold(FILE* out, bool* first);
 void oracle_write_query(FILE* out, bool* first);
 void oracle_write_mover(FILE* out, bool* first);
+void oracle_write_whitebox(FILE* out, bool* first);
 
 void oracle_case_begin(FILE* out, bool* first, const char* id, const char* family, const char* symbol, const char* input);
 void oracle_case_end(FILE* out);
