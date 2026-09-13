@@ -32,6 +32,27 @@ static b3Transform xf(const ScenarioCommand* c, int offset) { return (b3Transfor
 #define E_STEERING 8
 #define E_STEERING_LIMIT 9
 
+static b3MeshData* make_mesh(const ScenarioMeshData* source)
+{
+    b3Vec3* vertices = malloc((size_t)source->vertexCount * sizeof(*vertices));
+    int32_t* indices = malloc((size_t)source->triangleCount * 3u * sizeof(*indices));
+    if (!vertices || !indices) { free(vertices); free(indices); return NULL; }
+    for (int i = 0; i < source->vertexCount; ++i) vertices[i] = (b3Vec3){ f32(source->vertices[3 * i]), f32(source->vertices[3 * i + 1]), f32(source->vertices[3 * i + 2]) };
+    for (int i = 0; i < source->triangleCount * 3; ++i) indices[i] = source->indices[i];
+    b3MeshDef def = { 0 }; def.vertices = vertices; def.indices = indices; def.vertexCount = source->vertexCount; def.triangleCount = source->triangleCount; def.useMedianSplit = source->useMedianSplit != 0; def.identifyEdges = source->identifyEdges != 0;
+    b3MeshData* mesh = b3CreateMesh(&def, NULL, 0); free(vertices); free(indices); return mesh;
+}
+
+static b3HeightFieldData* make_height_field(const ScenarioHeightFieldData* source)
+{
+    int heightCount = source->countX * source->countZ; int cellCount = (source->countX - 1) * (source->countZ - 1);
+    float* heights = malloc((size_t)heightCount * sizeof(*heights)); uint8_t* materials = malloc((size_t)cellCount * sizeof(*materials));
+    if (!heights || !materials) { free(heights); free(materials); return NULL; }
+    for (int i = 0; i < heightCount; ++i) heights[i] = f32(source->samples[i]); for (int i = 0; i < cellCount; ++i) materials[i] = source->materials[i];
+    b3HeightFieldDef def = { 0 }; def.heights = heights; def.materialIndices = materials; def.scale = (b3Vec3){ f32(source->scaleX), f32(source->scaleY), f32(source->scaleZ) }; def.countX = source->countX; def.countZ = source->countZ; def.globalMinimumHeight = f32(source->minHeight); def.globalMaximumHeight = f32(source->maxHeight); def.clockwiseWinding = source->clockwiseWinding != 0;
+    b3HeightFieldData* field = b3CreateHeightField(&def); free(heights); free(materials); return field;
+}
+
 static void set_base(b3JointDef* base, const ScenarioCommand* c, b3BodyId* bodies)
 {
     base->bodyIdA = bodies[c->a]; base->bodyIdB = bodies[c->b];
@@ -63,17 +84,19 @@ static int create_joint(const ScenarioCommand* c, b3WorldId world, b3BodyId* bod
 static int run_scenario(int index, FILE* out)
 {
     if (index < 0 || index >= scenario_record_count) return 2;
-    const ScenarioRecord* record = scenario_records + index; b3WorldId world = b3_nullWorldId; b3BodyId bodies[128] = { 0 }; b3BoxHull boxes[128]; b3Sphere spheres[128]; b3Capsule capsules[128]; int jointCount = 0; int observations = 0; FILE* observationOutput = tmpfile(); FILE* hashOutput = tmpfile();
+    const ScenarioRecord* record = scenario_records + index; b3WorldId world = b3_nullWorldId; b3BodyId bodies[128] = { 0 }; b3BoxHull boxes[128]; b3Sphere spheres[128]; b3Capsule capsules[128]; b3MeshData* meshes[128] = { 0 }; b3HeightFieldData* heightFields[128] = { 0 }; int jointCount = 0; int observations = 0; FILE* observationOutput = tmpfile(); FILE* hashOutput = tmpfile();
     if (!observationOutput || !hashOutput) return 2;
     for (int i = 0; i < record->commandCount; ++i) {
         const ScenarioCommand* c = record->commands + i;
         switch (c->op) {
         case SCENARIO_WORLD: { b3WorldDef d = b3DefaultWorldDef(); d.gravity = v3(c, 0); d.enableSleep = (c->flags & (UINT64_C(1) << 62)) != 0; d.enableContinuous = (c->flags & (UINT64_C(1) << 63)) != 0; d.workerCount = 1; world = b3CreateWorld(&d); break; }
-        case SCENARIO_BODY: { if (!B3_IS_NON_NULL(world) || c->a < 0 || c->a >= 128) return 2; b3BodyDef d = b3DefaultBodyDef(); d.type = (b3BodyType)c->kind; d.position = (b3Pos){ f32(c->values[0]), f32(c->values[1]), f32(c->values[2]) }; d.rotation = q4(c, 3); d.linearVelocity = v3(c, 7); d.angularVelocity = v3(c, 10); d.linearDamping = f32(c->values[13]); d.angularDamping = f32(c->values[14]); bodies[c->a] = b3CreateBody(world, &d); break; }
+        case SCENARIO_BODY: { if (!B3_IS_NON_NULL(world) || c->a < 0 || c->a >= 128) return 2; b3BodyDef d = b3DefaultBodyDef(); d.type = (b3BodyType)c->kind; d.position = (b3Pos){ f32(c->values[0]), f32(c->values[1]), f32(c->values[2]) }; d.rotation = q4(c, 3); d.linearVelocity = v3(c, 7); d.angularVelocity = v3(c, 10); d.linearDamping = f32(c->values[13]); d.angularDamping = f32(c->values[14]); d.isBullet = HAS(c, 61); bodies[c->a] = b3CreateBody(world, &d); break; }
         case SCENARIO_BOX_RESOURCE: boxes[c->a] = b3MakeBoxHull(f32(c->values[0]), f32(c->values[1]), f32(c->values[2])); break;
         case SCENARIO_SPHERE_RESOURCE: spheres[c->a] = (b3Sphere){ { 0, 0, 0 }, f32(c->values[0]) }; break;
         case SCENARIO_CAPSULE_RESOURCE: capsules[c->a] = (b3Capsule){ v3(c, 0), v3(c, 3), f32(c->values[6]) }; break;
-        case SCENARIO_SHAPE: { if (!b3Body_IsValid(bodies[c->b])) return 2; b3ShapeDef d = b3DefaultShapeDef(); d.baseMaterial.rollingResistance = f32(c->values[1]); d.filter.groupIndex = (int)c->values[2]; if (c->kind == 1) b3CreateHullShape(bodies[c->b], &d, &boxes[(int)c->values[0]].base); else if (c->kind == 2) b3CreateSphereShape(bodies[c->b], &d, &spheres[(int)c->values[0]]); else if (c->kind == 3) b3CreateCapsuleShape(bodies[c->b], &d, &capsules[(int)c->values[0]]); else return 2; break; }
+        case SCENARIO_MESH_RESOURCE: if (c->mesh == NULL || c->a < 0 || c->a >= 128 || (meshes[c->a] = make_mesh(c->mesh)) == NULL) return 2; break;
+        case SCENARIO_HEIGHT_RESOURCE: if (c->heightField == NULL || c->a < 0 || c->a >= 128 || (heightFields[c->a] = make_height_field(c->heightField)) == NULL) return 2; break;
+        case SCENARIO_SHAPE: { if (!b3Body_IsValid(bodies[c->b])) return 2; b3ShapeDef d = b3DefaultShapeDef(); d.baseMaterial.rollingResistance = f32(c->values[1]); d.filter.groupIndex = (int)c->values[2]; int resource = (int)c->values[0]; if (c->kind == 1) b3CreateHullShape(bodies[c->b], &d, &boxes[resource].base); else if (c->kind == 2) b3CreateSphereShape(bodies[c->b], &d, &spheres[resource]); else if (c->kind == 3) b3CreateCapsuleShape(bodies[c->b], &d, &capsules[resource]); else if (c->kind == 4) b3CreateMeshShape(bodies[c->b], &d, meshes[resource], v3(c, 3)); else if (c->kind == 5) b3CreateHeightFieldShape(bodies[c->b], &d, heightFields[resource]); else return 2; break; }
         case SCENARIO_REVOLUTE: case SCENARIO_WELD: case SCENARIO_PARALLEL: case SCENARIO_MOTOR: case SCENARIO_DISTANCE: case SCENARIO_PRISMATIC: case SCENARIO_SPHERICAL: case SCENARIO_WHEEL: if (!B3_IS_NON_NULL(world) || !create_joint(c, world, bodies)) return 2; jointCount++; break;
         case SCENARIO_STEP: if (!B3_IS_NON_NULL(world)) return 2; b3World_Step(world, f32(c->values[0]), c->substeps); break;
         case SCENARIO_OBSERVE: { if (!B3_IS_NON_NULL(world)) return 2; if (observations) fputc(',', observationOutput); fprintf(observationOutput, "{\"step\":%d,\"bodies\":[", c->step); for (int j = 0; j < c->bodyCount; ++j) { if (j) fputc(',', observationOutput); if (c->bodies[j] < 0 || c->bodies[j] >= 128 || !b3Body_IsValid(bodies[c->bodies[j]])) return 2; b3WorldTransform t = b3Body_GetTransform(bodies[c->bodies[j]]); fprintf(observationOutput, "{\"id\":\"b%d\",\"p\":", c->bodies[j]); pos(observationOutput, t.p); fputs(",\"q\":[", observationOutput); hex32(observationOutput, bits(t.q.v.x)); fputc(',', observationOutput); hex32(observationOutput, bits(t.q.v.y)); fputc(',', observationOutput); hex32(observationOutput, bits(t.q.v.z)); fputc(',', observationOutput); hex32(observationOutput, bits(t.q.s)); fputs("],\"v\":", observationOutput); vec3(observationOutput, b3Body_GetLinearVelocity(bodies[c->bodies[j]])); fputs(",\"w\":", observationOutput); vec3(observationOutput, b3Body_GetAngularVelocity(bodies[c->bodies[j]])); fputc('}', observationOutput); } fputs("],\"receiptId\":\"", observationOutput); fputs(c->id, observationOutput); fputs("\"}", observationOutput); observations++; break; }
@@ -82,6 +105,6 @@ static int run_scenario(int index, FILE* out)
         }
     }
     if (jointCount != record->requiredJointCount) return 2;
-    fputs("{\"schema\":\"box3d-oracle/scenario-output/v1\",\"id\":\"", out); fputs(record->id, out); fputs("\",\"name\":\"", out); fputs(record->name, out); fprintf(out, "\",\"corpusDigest\":\"%s\",\"observations\":[", SCENARIO_CORPUS_DIGEST); copy_file(out, observationOutput); fprintf(out, "],\"hashes\":["); copy_file(out, hashOutput); fprintf(out, "],\"receipt\":{\"corpusDigest\":\"%s\",\"consumedCommands\":[", SCENARIO_CORPUS_DIGEST); for (int i = 0; i < record->commandCount; ++i) { if (i) fputc(',', out); fprintf(out, "\"%s\"", record->commands[i].id); } fputs("],\"observationIds\":[", out); int first = 1; for (int i = 0; i < record->commandCount; ++i) if (record->commands[i].op == SCENARIO_OBSERVE) { if (!first) fputc(',', out); first = 0; fprintf(out, "\"%s\"", record->commands[i].id); } fputs("]}}\n", out); if (B3_IS_NON_NULL(world)) b3DestroyWorld(world); return 0;
+    fputs("{\"schema\":\"box3d-oracle/scenario-output/v1\",\"id\":\"", out); fputs(record->id, out); fputs("\",\"name\":\"", out); fputs(record->name, out); fprintf(out, "\",\"corpusDigest\":\"%s\",\"observations\":[", SCENARIO_CORPUS_DIGEST); copy_file(out, observationOutput); fprintf(out, "],\"hashes\":["); copy_file(out, hashOutput); fprintf(out, "],\"receipt\":{\"corpusDigest\":\"%s\",\"consumedCommands\":[", SCENARIO_CORPUS_DIGEST); for (int i = 0; i < record->commandCount; ++i) { if (i) fputc(',', out); fprintf(out, "\"%s\"", record->commands[i].id); } fputs("],\"observationIds\":[", out); int first = 1; for (int i = 0; i < record->commandCount; ++i) if (record->commands[i].op == SCENARIO_OBSERVE) { if (!first) fputc(',', out); first = 0; fprintf(out, "\"%s\"", record->commands[i].id); } fputs("]}}\n", out); if (B3_IS_NON_NULL(world)) b3DestroyWorld(world); for (int i = 0; i < 128; ++i) { if (meshes[i]) b3DestroyMesh(meshes[i]); if (heightFields[i]) b3DestroyHeightField(heightFields[i]); } fclose(observationOutput); fclose(hashOutput); return 0;
 }
 int main(int argc, char** argv) { if (argc != 3 || strcmp(argv[1], "--index") != 0) return 2; char* end = NULL; long index = strtol(argv[2], &end, 10); if (end == argv[2] || *end) return 2; return run_scenario((int)index, stdout); }
