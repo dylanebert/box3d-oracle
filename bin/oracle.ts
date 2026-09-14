@@ -741,6 +741,40 @@ const SURFACE_SCENARIO_ROSTER = ["ccd-drop", "ccd-bullet", "mesh-box", "mesh-sph
 const COMPOUND_SENSOR_SCENARIO_ROSTER = ["compound-hull", "compound-capsule", "compound-sphere", "compound-mesh", "compound-ccd", "sensor"] as const;
 const BENCHMARK_SCENARIO_ROSTER = ["bench-pyramid", "bench-many-pyramids", "bench-joint-grid", "bench-washer", "bench-large-world", "bench-trees", "bench-junkyard", "bench-rain", "drift"] as const;
 const SCENARIO_FAMILIES: Record<string, string[]> = { foundation: [...FOUNDATION_SCENARIO_ROSTER], joints: [...JOINT_SCENARIO_ROSTER], surfaces: [...SURFACE_SCENARIO_ROSTER], "compound-sensor": [...COMPOUND_SENSOR_SCENARIO_ROSTER], benchmarks: [...BENCHMARK_SCENARIO_ROSTER], all: [...FOUNDATION_SCENARIO_ROSTER, ...JOINT_SCENARIO_ROSTER, ...SURFACE_SCENARIO_ROSTER, ...COMPOUND_SENSOR_SCENARIO_ROSTER, ...BENCHMARK_SCENARIO_ROSTER] };
+const V6_SCENARIO_SCHEMA = "box3d-oracle/scenario-output/v1";
+
+type ScenarioCorpusRecord = { id: string; name: string; commands: Array<{ id: string; op: string }>; stepCount: number };
+type ScenarioCorpus = { schema: string; corpusVersion: number; scenarios: ScenarioCorpusRecord[] };
+type ScenarioAdapterOutput = {
+  schema: string;
+  id: string;
+  name: string;
+  corpusDigest: string;
+  observations: unknown[];
+  hashes: unknown[];
+  sensorEvents: unknown[];
+  receipt?: { corpusDigest?: string; consumedCommands?: string[]; observationIds?: string[] };
+};
+
+function exactScenarioCorpus(root: string): { corpus: ScenarioCorpus; digest: string } {
+  const path = join(root, "projects", "box3d-oracle", "scenarios", "commands-v1.json");
+  const bytes = readFileSync(path);
+  const corpus = JSON.parse(bytes.toString()) as ScenarioCorpus;
+  const roster = SCENARIO_FAMILIES.all;
+  if (corpus.schema !== "box3d-oracle/scenario-command/v1" || corpus.corpusVersion !== 1 || corpus.scenarios.length !== roster.length) throw new OracleError("scenario corpus is not the exact v6 population");
+  corpus.scenarios.forEach((scenario, index) => {
+    if (scenario.name !== roster[index] || scenario.id !== `s1.${roster[index]}.v1` || !Array.isArray(scenario.commands)) throw new OracleError(`scenario corpus roster mismatch at ${index}`);
+  });
+  return { corpus, digest: digest(bytes) };
+}
+
+function validateScenarioAdapterOutput(output: ScenarioAdapterOutput, scenario: ScenarioCorpusRecord, corpusDigest: string): void {
+  const commandIds = scenario.commands.map((command) => command.id);
+  const observationIds = scenario.commands.filter((command) => command.op === "observe").map((command) => command.id);
+  if (output.schema !== V6_SCENARIO_SCHEMA || output.id !== scenario.id || output.name !== scenario.name || output.corpusDigest !== corpusDigest) throw new OracleError(`scenario adapter identity mismatch for ${scenario.name}`);
+  if (output.observations.length !== scenario.stepCount || output.hashes.length !== scenario.stepCount) throw new OracleError(`scenario adapter observation/hash count mismatch for ${scenario.name}`);
+  if (JSON.stringify(output.receipt?.consumedCommands) !== JSON.stringify(commandIds) || JSON.stringify(output.receipt?.observationIds) !== JSON.stringify(observationIds) || output.receipt?.corpusDigest !== corpusDigest) throw new OracleError(`scenario adapter receipt mismatch for ${scenario.name}`);
+}
 
 function legacyScenarioSource(cache: string, sha: string): string {
   requireFullSha(sha);
@@ -953,16 +987,84 @@ function scenarioMigrate(workspace: string, sha: string, legacySha: string, fami
   if (mismatches !== 0) throw new OracleError(`scenario migration refused: ${mismatches} mismatches`);
 }
 
+function generateBundleV6(workspace: string, sha: string, output: string): Record<string, unknown> {
+  requireFullSha(sha);
+  const root = resolve(workspace);
+  ensureEmptyDirectory(output);
+  const { corpus, digest: corpusDigest } = exactScenarioCorpus(root);
+  const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
+  const remoteCache = join(cache, "official.git");
+  verifyReachable(OFFICIAL_SOURCE_URL, sha, remoteCache);
+  const official = materializePristine(remoteCache, sha);
+  const pristine = verifyPristine(official, sha);
+  const inherited = mkdtempSync(join(tmpdir(), "box3d-oracle-v3-inherited-"));
+  const scenarioBuild = join(cache, "scenario-builds", `${sha}-v6`);
+  try {
+    generateBundleV3(root, sha, inherited);
+    const inheritedCases = JSON.parse(readFileSync(join(inherited, "cases.json"), "utf8")) as { schema: string; cases: Array<Record<string, unknown>> };
+    if (inheritedCases.schema !== "box3d-oracle/v3" || inheritedCases.cases.length !== 58) throw new OracleError("v6 inherited population is not exactly the v3 58-case corpus");
+    const patched = join(cache, "checkouts", `${sha}-scenario-v6-patched`);
+    rmSync(patched, { recursive: true, force: true });
+    patchOfficialSource(official, patched);
+    rmSync(scenarioBuild, { recursive: true, force: true });
+    mkdirSync(scenarioBuild, { recursive: true });
+    const table = join(scenarioBuild, "scenario_table.h");
+    checked("bun", [join(root, "projects", "box3d-oracle", "bin", "compile-scenarios.ts"), join(root, "projects", "box3d-oracle", "scenarios", "commands-v1.json"), table]);
+    const evidence = buildScenario(patched, scenarioBuild, dirname(table));
+    const scenarioCases: Array<Record<string, unknown>> = [];
+    for (let index = 0; index < corpus.scenarios.length; index += 1) {
+      const scenario = corpus.scenarios[index];
+      const result = command(evidence.executable, ["--index", String(index)]);
+      if (result.status !== 0) throw new OracleError(`v6 scenario adapter failed for ${scenario.name}: ${result.stderr}`);
+      const adapterOutput = JSON.parse(result.stdout) as ScenarioAdapterOutput;
+      validateScenarioAdapterOutput(adapterOutput, scenario, corpusDigest);
+      scenarioCases.push({ id: scenario.id, family: "scenario", symbol: "box3d-command-interpreter", input: { name: scenario.name, commandCorpusDigest: corpusDigest, stepCount: scenario.stepCount }, output: adapterOutput });
+    }
+    const allCases = [...inheritedCases.cases, ...scenarioCases];
+    const ids = new Set<string>();
+    for (const item of allCases) {
+      if (typeof item.id !== "string" || ids.has(item.id) || item.family === undefined || item.symbol === undefined || item.input === undefined || item.output === undefined) throw new OracleError(`invalid, duplicate, or incomplete v6 case: ${String(item.id)}`);
+      ids.add(item.id);
+    }
+    if (allCases.length !== 111 || scenarioCases.length !== 53) throw new OracleError(`v6 case union is not exactly 111 cases (${allCases.length}) with 53 scenarios (${scenarioCases.length})`);
+    const schema = readFileSync(join(root, "projects", "box3d-oracle", "schema", "v6.json"), "utf8");
+    const membership = canonicalJson({ schema: "box3d-oracle/v6", inherited: { schema: "box3d-oracle/v3", caseCount: 58 }, scenarios: { schema: "box3d-oracle/scenario-command/v1", caseCount: 53, roster: SCENARIO_FAMILIES.all, corpusDigest }, caseCount: 111, disposition: "The v6 scenario cases are generated by the generic official command interpreter; migration and Shallot comparisons are separate acceptance gates." });
+    const provenance = canonicalJson({ schema: "box3d-oracle/provenance-v3", inheritedCases: 58, scenarioCases: 53, scenarioCompiler: "bin/compile-scenarios.ts", scenarioAdapter: "adapter/scenario.c", scenarioExecutableSha256: sha256File(evidence.executable), corpusDigest, cases: scenarioCases.map((item) => item.id) });
+    const cases = canonicalJson({ schema: "box3d-oracle/v6", cases: allCases });
+    const files: BundleFile[] = [{ name: "schema.json", data: schema.endsWith("\\n") ? schema : `${schema}\\n` }, { name: "membership.json", data: membership }, { name: "provenance.json", data: provenance }, { name: "cases.json", data: cases }];
+    writeBundleFiles(output, files);
+    const fileDigests: Record<string, string> = {};
+    for (const file of files) fileDigests[file.name] = sha256File(join(output, file.name));
+    const memberCommit = checked("git", ["rev-parse", "HEAD"], join(root, "projects", "box3d-oracle")).stdout.trim();
+    const generatorPath = join(import.meta.dir, "oracle.ts");
+    const manifest: Record<string, unknown> = {
+      schema: "box3d-oracle/manifest-v6",
+      bundle: { upstreamSha: sha, schema: "v6", identity: `${sha}/v6` },
+      upstream: { url: OFFICIAL_SOURCE_URL, ref: OFFICIAL_SOURCE_REF, channel: "official-main", sha, tree: pristine.tree, reachableFromChannel: true },
+      oracle: { memberCommit, generator: "bin/oracle.ts", generatorSha256: sha256File(generatorPath), hookDigest: hookDigest(), adapters: ["adapter/o4_main.c", "adapter/o4.c", "adapter/whitebox.c", "adapter/scenario.c", ...publicSources().map((name) => `adapter/${name}`)] },
+      build: { inherited: "v3 generated in a fresh temporary directory", scenario: { compiler: compilerEvidence(), cmake: evidence.cmake, executableSha256: sha256File(evidence.executable), corpusDigest } },
+      schemaDefinition: "schema.json", membership: "membership.json", provenance: "provenance.json", caseFile: "cases.json", caseCount: 111, inheritedCaseCount: 58, scenarioCaseCount: 53, corpusDigest, fileDigests,
+      fileDigestScope: "Generated evidence files only; manifest is the receipt and is intentionally excluded from its own digest map.",
+      generation: { startsEmpty: true, readsShallot: false, readsGolds: false, overwrite: false, outputArithmetic: false, inheritedV3Exact: true, scenarioRosterExact: true },
+    };
+    writeFileSync(join(output, "manifest.json"), canonicalJson(manifest));
+    verifyPristine(official, sha);
+    return manifest;
+  } finally {
+    rmSync(inherited, { recursive: true, force: true });
+  }
+}
+
 function reproduce(workspace: string, bundle: string): void {
   const bundleRoot = resolve(workspace, bundle);
   const manifest = JSON.parse(readFileSync(join(bundleRoot, "manifest.json"), "utf8")) as { bundle?: { upstreamSha?: string; schema?: string } };
   const sha = manifest.bundle?.upstreamSha;
   const schema = manifest.bundle?.schema;
-  if (!sha || (schema !== "v1" && schema !== "v2" && schema !== "v3")) throw new OracleError("bundle manifest does not identify schema v1, v2, or v3 and a full upstream SHA");
+  if (!sha || (schema !== "v1" && schema !== "v2" && schema !== "v3" && schema !== "v6")) throw new OracleError("bundle manifest does not identify schema v1, v2, v3, or v6 and a full upstream SHA");
   const first = mkdtempSync(join(tmpdir(), "box3d-oracle-reproduce-a-"));
   const second = mkdtempSync(join(tmpdir(), "box3d-oracle-reproduce-b-"));
   try {
-    const generate = schema === "v3" ? generateBundleV3 : schema === "v2" ? generateBundleV2 : generateBundle;
+    const generate = schema === "v6" ? generateBundleV6 : schema === "v3" ? generateBundleV3 : schema === "v2" ? generateBundleV2 : generateBundle;
     generate(workspace, sha, first);
     generate(workspace, sha, second);
     compareTrees(first, second);
@@ -1009,7 +1111,7 @@ if (import.meta.main) {
       console.log(`sentinel-test: PASS ${args.sha}`);
     } else if (args.command === "generate") {
       if (!args.sha || !args.output) throw new OracleError("generate requires --sha and --output");
-      const result = args.schema === "v3" ? generateBundleV3(args.workspace, args.sha, resolve(args.output)) : args.schema === "v2" ? generateBundleV2(args.workspace, args.sha, resolve(args.output)) : generateBundle(args.workspace, args.sha, resolve(args.output));
+      const result = args.schema === "v6" ? generateBundleV6(args.workspace, args.sha, resolve(args.output)) : args.schema === "v3" ? generateBundleV3(args.workspace, args.sha, resolve(args.output)) : args.schema === "v2" ? generateBundleV2(args.workspace, args.sha, resolve(args.output)) : generateBundle(args.workspace, args.sha, resolve(args.output));
       console.log(`generate: PASS ${String((result.bundle as { identity: string }).identity)}`);
     } else {
       if (!args.bundle) throw new OracleError("reproduce requires --bundle");
