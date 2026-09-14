@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "box3d-oracle/inventory/v1",
+  "title": "Box3D official upstream runnable-case inventory",
+  "type": "object",
+  "required": ["schema", "source", "population", "main", "suites", "cases"],
+  "properties": {
+    "schema": { "const": "box3d-oracle/inventory/v1" },
+    "source": {
+      "type": "object",
+      "required": ["url", "ref", "sha", "tree"],
+      "properties": {
+        "url": { "const": "https://github.com/erincatto/box3d.git" },
+        "ref": { "const": "refs/heads/main" },
+        "sha": { "pattern": "^[0-9a-f]{40}$" },
+        "tree": { "pattern": "^[0-9a-f]{40}$" }
+      },
+      "additionalProperties": false
+    },
+    "population": {
+      "type": "object",
+      "required": ["half", "suiteFiles", "suiteCount", "caseCount"],
+      "properties": {
+        "half": { "const": "o6a" },
+        "suiteFiles": { "type": "array", "items": { "type": "string" } },
+        "suiteCount": { "type": "integer", "minimum": 1 },
+        "caseCount": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "main": { "type": "object" },
+    "suites": { "type": "array", "items": { "type": "object" } },
+    "cases": { "type": "array", "items": { "type": "object" } }
+  },
+  "additionalProperties": false
+}

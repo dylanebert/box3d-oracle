@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { DECLARED_SYMBOLS, O4_DECLARED_SYMBOLS, PATCHES, type OraclePatch } from "../hooks/patches";
+import { extractInventoryFromSources, writeInventoryArtifacts } from "./inventory";
 
 export const OFFICIAL_SOURCE_URL = "https://github.com/erincatto/box3d.git";
 export const OFFICIAL_SOURCE_REF = "refs/heads/main";
@@ -1055,6 +1056,20 @@ function generateBundleV6(workspace: string, sha: string, output: string): Recor
   }
 }
 
+function inventory(workspace: string, sha: string, output: string, coverage: string): void {
+  requireFullSha(sha);
+  const root = resolve(workspace);
+  const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
+  const remoteCache = join(cache, "official.git");
+  verifyReachable(OFFICIAL_SOURCE_URL, sha, remoteCache);
+  const source = materializePristine(remoteCache, sha);
+  const pristine = verifyPristine(source, sha);
+  const result = extractInventoryFromSources(source, sha, pristine.tree);
+  writeInventoryArtifacts(result, resolve(output), resolve(coverage));
+  verifyPristine(source, sha);
+  console.log(JSON.stringify({ schema: result.schema, source: result.source, population: result.population, inventory: output, coverage }, null, 2));
+}
+
 function reproduce(workspace: string, bundle: string): void {
   const bundleRoot = resolve(workspace, bundle);
   const manifest = JSON.parse(readFileSync(join(bundleRoot, "manifest.json"), "utf8")) as { bundle?: { upstreamSha?: string; schema?: string } };
@@ -1074,17 +1089,18 @@ function reproduce(workspace: string, bundle: string): void {
     rmSync(second, { recursive: true, force: true });
   }
 }
-function parseArgs(args: string[]): { command: string; workspace: string; sha?: string; legacySha?: string; output?: string; bundle?: string; schema?: string; family?: string } {
+function parseArgs(args: string[]): { command: string; workspace: string; sha?: string; legacySha?: string; output?: string; coverage?: string; bundle?: string; schema?: string; family?: string } {
   const name = args[0];
-  if (!name || !["upstream-test", "generate", "reproduce", "sentinel-test", "scenario-migrate"].includes(name)) throw new OracleError("usage: oracle.ts upstream-test|generate|reproduce|sentinel-test|scenario-migrate ...");
-  const result: { command: string; workspace: string; sha?: string; legacySha?: string; output?: string; bundle?: string; schema?: string; family?: string } = { command: name, workspace: "" };
+  if (!name || !["upstream-test", "generate", "reproduce", "sentinel-test", "scenario-migrate", "inventory"].includes(name)) throw new OracleError("usage: oracle.ts upstream-test|generate|reproduce|sentinel-test|scenario-migrate|inventory ...");
+  const result: { command: string; workspace: string; sha?: string; legacySha?: string; output?: string; coverage?: string; bundle?: string; schema?: string; family?: string } = { command: name, workspace: "" };
   for (let index = 1; index < args.length; index += 1) {
     const flag = args[index]; const value = args[index + 1];
-    if (!value || !["--workspace", "--sha", "--legacy-sha", "--output", "--bundle", "--schema", "--family"].includes(flag)) throw new OracleError(`unknown or incomplete argument: ${flag}`);
+    if (!value || !["--workspace", "--sha", "--legacy-sha", "--output", "--coverage", "--bundle", "--schema", "--family"].includes(flag)) throw new OracleError(`unknown or incomplete argument: ${flag}`);
     if (flag === "--workspace") result.workspace = value;
     if (flag === "--sha") result.sha = value;
     if (flag === "--legacy-sha") result.legacySha = value;
     if (flag === "--output") result.output = value;
+    if (flag === "--coverage") result.coverage = value;
     if (flag === "--bundle") result.bundle = value;
     if (flag === "--schema") result.schema = value;
     if (flag === "--family") result.family = value;
@@ -1097,7 +1113,10 @@ function parseArgs(args: string[]): { command: string; workspace: string; sha?: 
 if (import.meta.main) {
   try {
     const args = parseArgs(process.argv.slice(2));
-    if (args.command === "scenario-migrate") {
+    if (args.command === "inventory") {
+      if (!args.sha || !args.output || !args.coverage) throw new OracleError("inventory requires --sha, --output, and --coverage");
+      inventory(args.workspace, args.sha, args.output, args.coverage);
+    } else if (args.command === "scenario-migrate") {
       if (!args.sha || !args.legacySha || !args.family) throw new OracleError("scenario-migrate requires --sha, --legacy-sha, and --family");
       scenarioMigrate(args.workspace, args.sha, args.legacySha, args.family);
     } else if (args.command === "upstream-test") {

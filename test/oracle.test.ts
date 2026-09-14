@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { expect, test } from "bun:test";
 import { rejectCopiedBody, verifyDeclaredSymbols, verifyPatchSet, verifyPristine, verifyReachable, verifyTreeMatches, runUpstreamTest } from "../bin/oracle";
 import { DECLARED_SYMBOLS, PATCHES } from "../hooks/patches";
+import { classifyInventory, extractSuite, joinInventoryCoverage, type Inventory } from "../bin/inventory";
 
 function git(cwd: string, ...args: string[]): string {
   const result = spawnSync("git", args, {
@@ -90,6 +91,37 @@ test("declared provenance rejects a missing or wrong symbol", () => {
   } finally {
     rmSync(source, { recursive: true, force: true });
   }
+});
+
+test("inventory accepts a direct registration when no subtest macro is present", () => {
+  const source = readFileSync(join(import.meta.dir, "fixtures/inventory/direct-registration.c"), "utf8");
+  const suite = extractSuite("test_direct_registration.c", source, "DirectFixtureTest", { line: 1, text: "MAYBE_RUN_TEST( DirectFixtureTest );" });
+  expect(suite.cases).toHaveLength(1);
+  expect(suite.cases[0].id).toBe("test_direct_registration.c::DirectFixtureTest");
+  expect(suite.cases[0].registration.kind).toBe("direct");
+  expect(suite.cases[0].sourceSymbol).toBe("DirectFixtureTest");
+});
+
+test("inventory rejects an unknown registration form", () => {
+  const source = readFileSync(join(import.meta.dir, "fixtures/inventory/malformed-registration.c"), "utf8");
+  expect(() => extractSuite("test_malformed_registration.c", source, "MalformedFixtureTest")).toThrow(/unknown registration form RUN_TEST/);
+});
+
+test("inventory coverage is an exact case join with no wildcard or suite-only rows", () => {
+  const source = readFileSync(join(import.meta.dir, "fixtures/inventory/direct-registration.c"), "utf8");
+  const suite = extractSuite("test_direct_registration.c", source, "DirectFixtureTest");
+  const inventory: Inventory = {
+    schema: "box3d-oracle/inventory/v1",
+    source: { url: "https://github.com/erincatto/box3d.git", ref: "refs/heads/main", sha: "a".repeat(40), tree: "b".repeat(40) },
+    population: { half: "o6a", suiteFiles: [suite.file], suiteCount: 1, caseCount: suite.cases.length },
+    main: { file: "main.c", blobSha256: "c".repeat(64), registrations: [] },
+    suites: [suite],
+    cases: suite.cases,
+  };
+  const coverage = classifyInventory(inventory);
+  expect(joinInventoryCoverage(inventory, coverage).cases).toHaveLength(1);
+  expect(() => joinInventoryCoverage(inventory, { ...coverage, cases: [{ ...coverage.cases[0], id: "test_direct_registration.c" }] })).toThrow(/exact case ID/);
+  expect(() => joinInventoryCoverage(inventory, { ...coverage, cases: [{ ...coverage.cases[0] }, { ...coverage.cases[0] }] })).toThrow(/duplicate coverage row/);
 });
 
 test("upstream test evidence preserves a failed executable premise", () => {

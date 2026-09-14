@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "box3d-oracle/coverage/v1",
+  "title": "Box3D exact case coverage classification",
+  "type": "object",
+  "required": ["schema", "inventorySchema", "source", "population", "cases"],
+  "properties": {
+    "schema": { "const": "box3d-oracle/coverage/v1" },
+    "inventorySchema": { "const": "box3d-oracle/inventory/v1" },
+    "source": { "type": "object", "required": ["sha", "tree"], "additionalProperties": false },
+    "population": { "type": "object", "required": ["half", "suiteCount", "caseCount"], "additionalProperties": false },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status", "reason", "execution"],
+        "properties": {
+          "id": { "pattern": "^test_[^:]+\\.c::[A-Za-z_][A-Za-z0-9_]*$" },
+          "status": { "enum": ["equivalent", "broader-equivalent", "expected-difference", "not-applicable"] },
+          "reason": { "type": "string", "minLength": 1 },
+          "execution": { "type": "object", "required": ["command", "filter", "executable"], "additionalProperties": false }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
