@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { DECLARED_SYMBOLS, O4_DECLARED_SYMBOLS, PATCHES, type OraclePatch } from "../hooks/patches";
-import { extractInventoryFromSources, writeInventoryArtifacts } from "./inventory";
+import { ALL_SUITE_FILES, O6A_SUITE_FILES, O6B_SUITE_FILES, classifyInventory, diffInventories, extractInventoryFromSources, joinInventoryCoverage, mergeCoverage, mergeInventories, type Coverage, type Inventory } from "./inventory";
 
 export const OFFICIAL_SOURCE_URL = "https://github.com/erincatto/box3d.git";
 export const OFFICIAL_SOURCE_REF = "refs/heads/main";
@@ -1056,18 +1056,58 @@ function generateBundleV6(workspace: string, sha: string, output: string): Recor
   }
 }
 
-function inventory(workspace: string, sha: string, output: string, coverage: string): void {
+function writeJson(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function loadInventory(path: string): Inventory {
+  return JSON.parse(readFileSync(path, "utf8")) as Inventory;
+}
+
+function loadCoverage(path: string): Coverage {
+  return JSON.parse(readFileSync(path, "utf8")) as Coverage;
+}
+
+function inventory(workspace: string, sha: string, output: string, coverage: string, diffPath?: string, half: "o6a" | "o6b" | "current" = "current"): void {
   requireFullSha(sha);
   const root = resolve(workspace);
+  const member = join(import.meta.dir, "..");
   const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
   const remoteCache = join(cache, "official.git");
   verifyReachable(OFFICIAL_SOURCE_URL, sha, remoteCache);
   const source = materializePristine(remoteCache, sha);
-  const pristine = verifyPristine(source, sha);
-  const result = extractInventoryFromSources(source, sha, pristine.tree);
-  writeInventoryArtifacts(result, resolve(output), resolve(coverage));
-  verifyPristine(source, sha);
-  console.log(JSON.stringify({ schema: result.schema, source: result.source, population: result.population, inventory: output, coverage }, null, 2));
+  try {
+    const pristine = verifyPristine(source, sha);
+    const selected = half === "o6a" ? O6A_SUITE_FILES : half === "o6b" ? O6B_SUITE_FILES : ALL_SUITE_FILES;
+    const extracted = extractInventoryFromSources(source, sha, pristine.tree, selected, half === "current" ? "complete" : half);
+    if (half !== "current") {
+      writeJson(resolve(output), extracted);
+      writeJson(resolve(coverage), classifyInventory(extracted));
+      verifyPristine(source, sha);
+      console.log(JSON.stringify({ schema: extracted.schema, source: extracted.source, population: extracted.population, inventory: output, coverage }, null, 2));
+      return;
+    }
+    const o6a = loadInventory(join(member, "inventory", "o6a.json"));
+    const o6aCoverage = loadCoverage(join(member, "coverage", "o6a.json"));
+    const o6b = extractInventoryFromSources(source, sha, pristine.tree, O6B_SUITE_FILES, "o6b");
+    const current = mergeInventories(o6a, o6b);
+    const o6bCoverage = classifyInventory(o6b);
+    const currentCoverage = mergeCoverage(o6aCoverage, o6bCoverage, current);
+    joinInventoryCoverage(current, currentCoverage);
+    writeJson(resolve(output), current);
+    writeJson(resolve(coverage), currentCoverage);
+    const update = diffInventories(o6a, current);
+    if (diffPath) writeJson(resolve(diffPath), update);
+    verifyPristine(source, sha);
+    console.log(JSON.stringify({ schema: current.schema, source: current.source, population: current.population, classification: classificationTotals(currentCoverage), inventory: output, coverage, updateDiff: diffPath ?? null }, null, 2));
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+  }
+}
+
+function classificationTotals(coverage: Coverage): Record<string, number> {
+  return Object.fromEntries(["equivalent", "broader-equivalent", "expected-difference", "not-applicable"].map((status) => [status, coverage.cases.filter((item) => item.status === status).length]));
 }
 
 function reproduce(workspace: string, bundle: string): void {
@@ -1089,21 +1129,26 @@ function reproduce(workspace: string, bundle: string): void {
     rmSync(second, { recursive: true, force: true });
   }
 }
-function parseArgs(args: string[]): { command: string; workspace: string; sha?: string; legacySha?: string; output?: string; coverage?: string; bundle?: string; schema?: string; family?: string } {
+function parseArgs(args: string[]): { command: string; workspace: string; sha?: string; legacySha?: string; output?: string; coverage?: string; diff?: string; bundle?: string; schema?: string; family?: string; half?: "o6a" | "o6b" | "current" } {
   const name = args[0];
   if (!name || !["upstream-test", "generate", "reproduce", "sentinel-test", "scenario-migrate", "inventory"].includes(name)) throw new OracleError("usage: oracle.ts upstream-test|generate|reproduce|sentinel-test|scenario-migrate|inventory ...");
-  const result: { command: string; workspace: string; sha?: string; legacySha?: string; output?: string; coverage?: string; bundle?: string; schema?: string; family?: string } = { command: name, workspace: "" };
+  const result: { command: string; workspace: string; sha?: string; legacySha?: string; output?: string; coverage?: string; diff?: string; bundle?: string; schema?: string; family?: string; half?: "o6a" | "o6b" | "current" } = { command: name, workspace: "" };
   for (let index = 1; index < args.length; index += 1) {
     const flag = args[index]; const value = args[index + 1];
-    if (!value || !["--workspace", "--sha", "--legacy-sha", "--output", "--coverage", "--bundle", "--schema", "--family"].includes(flag)) throw new OracleError(`unknown or incomplete argument: ${flag}`);
+    if (!value || !["--workspace", "--sha", "--legacy-sha", "--output", "--coverage", "--diff", "--bundle", "--schema", "--family", "--half"].includes(flag)) throw new OracleError(`unknown or incomplete argument: ${flag}`);
     if (flag === "--workspace") result.workspace = value;
     if (flag === "--sha") result.sha = value;
     if (flag === "--legacy-sha") result.legacySha = value;
     if (flag === "--output") result.output = value;
     if (flag === "--coverage") result.coverage = value;
+    if (flag === "--diff") result.diff = value;
     if (flag === "--bundle") result.bundle = value;
     if (flag === "--schema") result.schema = value;
     if (flag === "--family") result.family = value;
+    if (flag === "--half") {
+      if (value !== "o6a" && value !== "o6b" && value !== "current") throw new OracleError(`unknown inventory half: ${value}`);
+      result.half = value;
+    }
     index += 1;
   }
   if (!result.workspace) throw new OracleError("--workspace is required");
@@ -1115,7 +1160,7 @@ if (import.meta.main) {
     const args = parseArgs(process.argv.slice(2));
     if (args.command === "inventory") {
       if (!args.sha || !args.output || !args.coverage) throw new OracleError("inventory requires --sha, --output, and --coverage");
-      inventory(args.workspace, args.sha, args.output, args.coverage);
+      inventory(args.workspace, args.sha, args.output, args.coverage, args.diff, args.half);
     } else if (args.command === "scenario-migrate") {
       if (!args.sha || !args.legacySha || !args.family) throw new OracleError("scenario-migrate requires --sha, --legacy-sha, and --family");
       scenarioMigrate(args.workspace, args.sha, args.legacySha, args.family);

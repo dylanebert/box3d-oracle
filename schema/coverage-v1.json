@@ -8,7 +8,12 @@
     "schema": { "const": "box3d-oracle/coverage/v1" },
     "inventorySchema": { "const": "box3d-oracle/inventory/v1" },
     "source": { "type": "object", "required": ["sha", "tree"], "additionalProperties": false },
-    "population": { "type": "object", "required": ["half", "suiteCount", "caseCount"], "additionalProperties": false },
+    "population": {
+      "type": "object",
+      "required": ["half", "suiteCount", "caseCount"],
+      "properties": { "half": { "enum": ["o6a", "o6b", "complete"] }, "suiteCount": { "type": "integer" }, "caseCount": { "type": "integer" } },
+      "additionalProperties": false
+    },
     "cases": {
       "type": "array",
       "items": {
