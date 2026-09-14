@@ -20,8 +20,7 @@ export const O6A_SUITE_FILES = [
   "test_id.c",
 ] as const;
 
-export const ALL_SUITE_FILES = [
-  ...O6A_SUITE_FILES,
+export const O6B_SUITE_FILES = [
   "test_joint.c",
   "test_large_world.c",
   "test_manifold.c",
@@ -35,6 +34,10 @@ export const ALL_SUITE_FILES = [
   "test_table.c",
   "test_world.c",
 ] as const;
+
+export const ALL_SUITE_FILES = [...O6A_SUITE_FILES, ...O6B_SUITE_FILES] as const;
+export const INVENTORY_HALVES = ["o6a", "o6b", "complete"] as const;
+export type InventoryHalf = (typeof INVENTORY_HALVES)[number];
 
 const SUITE_SYMBOLS: Record<string, string> = {
   "test_allocator.c": "AllocatorTest",
@@ -104,7 +107,7 @@ export type InventorySuite = {
 export type Inventory = {
   schema: "box3d-oracle/inventory/v1";
   source: { url: string; ref: string; sha: string; tree: string };
-  population: { half: "o6a"; suiteFiles: string[]; suiteCount: number; caseCount: number };
+  population: { half: InventoryHalf; suiteFiles: string[]; suiteCount: number; caseCount: number };
   main: { file: "main.c"; blobSha256: string; registrations: Array<{ symbol: string; line: number; text: string; fingerprint: string }> };
   suites: InventorySuite[];
   cases: InventoryCase[];
@@ -121,7 +124,7 @@ export type Coverage = {
   schema: "box3d-oracle/coverage/v1";
   inventorySchema: "box3d-oracle/inventory/v1";
   source: { sha: string; tree: string };
-  population: { half: "o6a"; suiteCount: number; caseCount: number };
+  population: { half: InventoryHalf; suiteCount: number; caseCount: number };
   cases: CoverageRow[];
 };
 
@@ -304,7 +307,7 @@ function mainRegistrations(source: string): Array<{ symbol: string; line: number
   return registrations.map((registration) => ({ symbol: registration.symbol, line: registration.line, text: registration.text, fingerprint: sha256(`main.c:${registration.line}:${registration.text}`) }));
 }
 
-export function extractInventoryFromSources(sourceRoot: string, sha: string, tree: string, suiteFiles: readonly string[] = O6A_SUITE_FILES): Inventory {
+export function extractInventoryFromSources(sourceRoot: string, sha: string, tree: string, suiteFiles: readonly string[] = O6A_SUITE_FILES, half: InventoryHalf = sameList(suiteFiles, O6B_SUITE_FILES) ? "o6b" : sameList(suiteFiles, ALL_SUITE_FILES) ? "complete" : "o6a"): Inventory {
   const testRoot = join(sourceRoot, "test");
   const mainPath = join(testRoot, "main.c");
   if (!existsSync(mainPath)) throw new InventoryError(`official source is missing test/main.c: ${sourceRoot}`);
@@ -329,7 +332,7 @@ export function extractInventoryFromSources(sourceRoot: string, sha: string, tre
   return {
     schema: "box3d-oracle/inventory/v1",
     source: { url: OFFICIAL_SOURCE_URL, ref: OFFICIAL_SOURCE_REF, sha, tree },
-    population: { half: "o6a", suiteFiles: suites.map((suite) => suite.file), suiteCount: suites.length, caseCount: cases.length },
+    population: { half, suiteFiles: suites.map((suite) => suite.file), suiteCount: suites.length, caseCount: cases.length },
     main: { file: "main.c", blobSha256: sha256(mainSource), registrations },
     suites,
     cases,
@@ -340,7 +343,7 @@ export function classifyInventory(inventory: Inventory): Coverage {
   const cases = inventory.cases.map((item) => ({
     id: item.id,
     status: "not-applicable" as const,
-    reason: "No Shallot parity claim is admitted for this upstream case by O6a; the exact case remains runnable through its official suite registration.",
+    reason: `No Shallot parity claim is admitted for this upstream case by ${inventory.population.half === "complete" ? "the cumulative O6 inventory" : inventory.population.half.toUpperCase()}; the exact case remains runnable through its official suite registration.`,
     execution: {
       command: `test ${item.suiteSymbol}`,
       filter: item.suiteSymbol,
@@ -351,8 +354,85 @@ export function classifyInventory(inventory: Inventory): Coverage {
     schema: "box3d-oracle/coverage/v1",
     inventorySchema: "box3d-oracle/inventory/v1",
     source: { sha: inventory.source.sha, tree: inventory.source.tree },
-    population: { half: "o6a", suiteCount: inventory.population.suiteCount, caseCount: cases.length },
+    population: { half: inventory.population.half, suiteCount: inventory.population.suiteCount, caseCount: cases.length },
     cases,
+  };
+}
+
+function sameList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function assertSameSource(left: Inventory, right: Inventory): void {
+  if (JSON.stringify(left.source) !== JSON.stringify(right.source)) throw new InventoryError("inventory sources do not match");
+}
+
+export function mergeInventories(o6a: Inventory, o6b: Inventory): Inventory {
+  assertSameSource(o6a, o6b);
+  if (o6a.population.half !== "o6a" || o6b.population.half !== "o6b") throw new InventoryError("cumulative inventory requires separate O6a and O6b halves");
+  if (!sameList(o6a.population.suiteFiles, O6A_SUITE_FILES) || !sameList(o6b.population.suiteFiles, O6B_SUITE_FILES)) throw new InventoryError("inventory halves are not the exact allocator-through-id and joint-through-world selections");
+  const suiteIds = new Set<string>();
+  const caseIds = new Set<string>();
+  for (const suite of [...o6a.suites, ...o6b.suites]) {
+    if (suiteIds.has(suite.file)) throw new InventoryError(`duplicate inventory suite: ${suite.file}`);
+    suiteIds.add(suite.file);
+    for (const item of suite.cases) {
+      if (caseIds.has(item.id)) throw new InventoryError(`duplicate inventory ID across halves: ${item.id}`);
+      caseIds.add(item.id);
+    }
+  }
+  const suites = [...o6a.suites, ...o6b.suites];
+  const cases = suites.flatMap((suite) => suite.cases);
+  if (!sameList(suites.map((suite) => suite.file), ALL_SUITE_FILES)) throw new InventoryError("cumulative inventory suite selection is not the exact official roster");
+  return {
+    schema: "box3d-oracle/inventory/v1",
+    source: o6a.source,
+    population: { half: "complete", suiteFiles: suites.map((suite) => suite.file), suiteCount: suites.length, caseCount: cases.length },
+    main: o6a.main,
+    suites,
+    cases,
+  };
+}
+
+export function mergeCoverage(o6a: Coverage, o6b: Coverage, inventory: Inventory): Coverage {
+  if (o6a.schema !== "box3d-oracle/coverage/v1" || o6b.schema !== "box3d-oracle/coverage/v1") throw new InventoryError("coverage halves have the wrong schema");
+  if (o6a.source.sha !== inventory.source.sha || o6a.source.tree !== inventory.source.tree || o6b.source.sha !== inventory.source.sha || o6b.source.tree !== inventory.source.tree) throw new InventoryError("coverage source does not match cumulative inventory source");
+  if (o6a.population.half !== "o6a" || o6b.population.half !== "o6b") throw new InventoryError("cumulative coverage requires separate O6a and O6b halves");
+  const cases = [...o6a.cases, ...o6b.cases];
+  const result: Coverage = { schema: "box3d-oracle/coverage/v1", inventorySchema: "box3d-oracle/inventory/v1", source: { sha: inventory.source.sha, tree: inventory.source.tree }, population: { half: "complete", suiteCount: inventory.population.suiteCount, caseCount: cases.length }, cases };
+  joinInventoryCoverage(inventory, result);
+  return result;
+}
+
+export type InventoryUpdateDiff = {
+  schema: "box3d-oracle/inventory-update-diff/v1";
+  source: { from: Inventory["source"]; to: Inventory["source"] };
+  added: string[];
+  removed: string[];
+  changed: Array<{ id: string; fields: string[] }>;
+  summary: { added: number; removed: number; changed: number };
+};
+
+const comparableCaseFields = ["suiteFile", "suiteSymbol", "caseSymbol", "sourceSymbol", "registration", "source", "suiteBlobSha256"] as const;
+
+export function diffInventories(previous: Inventory, current: Inventory): InventoryUpdateDiff {
+  const before = new Map(previous.cases.map((item) => [item.id, item]));
+  const after = new Map(current.cases.map((item) => [item.id, item]));
+  const added = current.cases.filter((item) => !before.has(item.id)).map((item) => item.id);
+  const removed = previous.cases.filter((item) => !after.has(item.id)).map((item) => item.id);
+  const changed = current.cases.flatMap((item) => {
+    const old = before.get(item.id);
+    if (!old) return [];
+    const fields = comparableCaseFields.filter((field) => JSON.stringify(old[field]) !== JSON.stringify(item[field]));
+    return fields.length === 0 ? [] : [{ id: item.id, fields: [...fields] }];
+  });
+  return {
+    schema: "box3d-oracle/inventory-update-diff/v1",
+    source: { from: previous.source, to: current.source },
+    added,
+    removed,
+    changed,
+    summary: { added: added.length, removed: removed.length, changed: changed.length },
   };
 }
 

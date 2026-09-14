@@ -1,0 +1,1325 @@
+{
+  "schema": "box3d-oracle/coverage/v1",
+  "inventorySchema": "box3d-oracle/inventory/v1",
+  "source": {
+    "sha": "47d7f7cc7e091142c08d11dc7d2e493c5d34f536",
+    "tree": "0a6472d03ff61c9af28216443fba341a21cbed96"
+  },
+  "population": {
+    "half": "o6b",
+    "suiteCount": 12,
+    "caseCount": 131
+  },
+  "cases": [
+    {
+      "id": "test_joint.c::TestParallelJoint",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test JointTest",
+        "filter": "JointTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_joint.c::TestDistanceJoint",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test JointTest",
+        "filter": "JointTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_joint.c::TestFilterJoint",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test JointTest",
+        "filter": "JointTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_joint.c::TestMotorJoint",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test JointTest",
+        "filter": "JointTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_joint.c::TestPrismaticJoint",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test JointTest",
+        "filter": "JointTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_joint.c::TestRevoluteJoint",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test JointTest",
+        "filter": "JointTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_joint.c::TestSphericalJoint",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test JointTest",
+        "filter": "JointTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_joint.c::TestWeldJoint",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test JointTest",
+        "filter": "JointTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_joint.c::TestWheelJoint",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test JointTest",
+        "filter": "JointTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_large_world.c::LargeWorldStackTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test LargeWorldTest",
+        "filter": "LargeWorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_large_world.c::LargeWorldBulletTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test LargeWorldTest",
+        "filter": "LargeWorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_large_world.c::LargeWorldQueryTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test LargeWorldTest",
+        "filter": "LargeWorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::CrossedEdgeTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::EdgeAxisScaleTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::EdgeCacheTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::EdgeEndpointTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::ParallelEdgeTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::ParallelEdgeManualTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::OverlapNeverEmptyTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::RidgeCrossingTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::TriangleEdgeTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::TriangleParallelEdgeTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::EdgeAxisOracleTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::EdgeAxisRandomOracleTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::HullCapsuleEdgeDeepTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::TriangleHullEdgeSweepTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::CapsuleTriangleEdgeDeepTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::CapsuleTriangleFaceDeepTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::HullCapsuleFaceDeepTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::SphereHullSeamTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_manifold.c::CapsuleHullSeamTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ManifoldTest",
+        "filter": "ManifoldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_math.c::MathTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MathTest",
+        "filter": "MathTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mesh.c::MeshDenseStride",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MeshTest",
+        "filter": "MeshTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mesh.c::MeshFatStride",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MeshTest",
+        "filter": "MeshTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mesh.c::MeshStrideWeld",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MeshTest",
+        "filter": "MeshTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mesh.c::MeshClockWise",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MeshTest",
+        "filter": "MeshTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mesh.c::MeshClockWiseIgnored",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MeshTest",
+        "filter": "MeshTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mesh.c::MeshClockWiseStrideWeld",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MeshTest",
+        "filter": "MeshTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mesh.c::MeshCreators",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MeshTest",
+        "filter": "MeshTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::GamePlanes",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::ParallelPlanes",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverSphereSeparated",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverSphereTouching",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverSphereDeepOverlap",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverCapsuleSeparated",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverCapsuleTouching",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverCapsuleDeepOverlap",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverCapsuleParallelOverlap",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverHullSeparated",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverHullTouching",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverHullDeepOverlap",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverWorldMeshMaterials",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverWorldCompoundMeshMaterials",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverBodyMaterialIndices",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverBodySkipsMeshAndCompound",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverMeshBackside",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverMeshMirroredScale",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverHeightFieldBackside",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverHeightFieldReport",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverHeightFieldClockwise",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_mover.c::MoverWorldMeshMaterialClamp",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test MoverTest",
+        "filter": "MoverTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_name_cache.c::CacheUnit",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test NameCacheTest",
+        "filter": "NameCacheTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_name_cache.c::NameRoundTrip",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test NameCacheTest",
+        "filter": "NameCacheTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_name_cache.c::RollbackNames",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test NameCacheTest",
+        "filter": "NameCacheTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::GeometryHashCollision",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::ShapeNameReplay",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::SphereRoundTrip",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::EmptyWorldRoundTrip",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::HullDedup",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::MidStreamNoContacts",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::MidStreamContacts",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::StagedStepCreationPose",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::ScrubBackward",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::SeekWithHull",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::DebugShapeCallbacks",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::PlayerAccessors",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::KeyframeHandleReuse",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::QueryReplay",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::TaggedQuery",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::TransformedHullRoundTrip",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::GeometryMutatorReplay",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::AllOps",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_recording.c::ReservedHeaderBytes",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test RecordingTest",
+        "filter": "RecordingTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_sat.c::FaceAxisASeparatedTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test SeparatingAxisTest",
+        "filter": "SeparatingAxisTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_sat.c::FaceAxisBSeparatedTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test SeparatingAxisTest",
+        "filter": "SeparatingAxisTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_sat.c::FaceFarSeparatedTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test SeparatingAxisTest",
+        "filter": "SeparatingAxisTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_sat.c::OffsetFaceAxisBTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test SeparatingAxisTest",
+        "filter": "SeparatingAxisTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_sat.c::EdgePairSweepTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test SeparatingAxisTest",
+        "filter": "SeparatingAxisTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_sat.c::SeparatingAxisOracleTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test SeparatingAxisTest",
+        "filter": "SeparatingAxisTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_sat.c::OffsetHullOracleTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test SeparatingAxisTest",
+        "filter": "SeparatingAxisTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::ShapeMassTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::ShapeAABBTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::ShapeNameTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::ShapeFlagsTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastShapeTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastSphereHitTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastSphereMissTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastSphereClipTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastSphereInteriorTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastSphereGrazeTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastCapsuleSideTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastCapsuleObliqueTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastCapsuleCapTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastCapsuleMissTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastCapsuleInteriorTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastCapsuleDegenerateTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastCapsuleClipTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastCapsuleParallelTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastOverlapConventionTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_shape.c::RayCastFarOriginTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test ShapeTest",
+        "filter": "ShapeTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_table.c::TableTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test TableTest",
+        "filter": "TableTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::HelloWorld",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::EmptyWorld",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::DestroyAllBodiesWorld",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::TestIsValid",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::TestWorldRecycle",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::TestWorldCoverage",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::TestExplosion",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::TestSensor",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::TestContinuousMoveEvent",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::TestContactEvents",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::TestHitEvents",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::TestCompoundHitEvents",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::TestCompoundContactMaterials",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::TestOverflowColorPile",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::SetBulletDriftTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::EnableSleepFlagSyncTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::EnableSleepNoopUnlockTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::EnableContactRecyclingTest",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::TestSetWorkerCount",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    },
+    {
+      "id": "test_world.c::TestHullDatabase",
+      "status": "not-applicable",
+      "reason": "No Shallot parity claim is admitted for this upstream case by O6B; the exact case remains runnable through its official suite registration.",
+      "execution": {
+        "command": "test WorldTest",
+        "filter": "WorldTest",
+        "executable": "official-upstream-test"
+      }
+    }
+  ]
+}

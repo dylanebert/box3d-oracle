@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "box3d-oracle/inventory-update-diff/v1",
+  "title": "Box3D exact inventory update diff",
+  "type": "object",
+  "required": ["schema", "source", "added", "removed", "changed", "summary"],
+  "properties": {
+    "schema": { "const": "box3d-oracle/inventory-update-diff/v1" },
+    "source": { "type": "object", "required": ["from", "to"], "additionalProperties": false },
+    "added": { "type": "array", "items": { "pattern": "^test_[^:]+\\.c::[A-Za-z_][A-Za-z0-9_]*$" } },
+    "removed": { "type": "array", "items": { "pattern": "^test_[^:]+\\.c::[A-Za-z_][A-Za-z0-9_]*$" } },
+    "changed": { "type": "array", "items": { "type": "object", "required": ["id", "fields"], "additionalProperties": false } },
+    "summary": { "type": "object", "required": ["added", "removed", "changed"], "additionalProperties": false }
+  },
+  "additionalProperties": false
+}

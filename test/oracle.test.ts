@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { expect, test } from "bun:test";
 import { rejectCopiedBody, verifyDeclaredSymbols, verifyPatchSet, verifyPristine, verifyReachable, verifyTreeMatches, runUpstreamTest } from "../bin/oracle";
 import { DECLARED_SYMBOLS, PATCHES } from "../hooks/patches";
-import { classifyInventory, extractSuite, joinInventoryCoverage, type Inventory } from "../bin/inventory";
+import { classifyInventory, diffInventories, extractSuite, joinInventoryCoverage, type Inventory } from "../bin/inventory";
 
 function git(cwd: string, ...args: string[]): string {
   const result = spawnSync("git", args, {
@@ -122,6 +122,38 @@ test("inventory coverage is an exact case join with no wildcard or suite-only ro
   expect(joinInventoryCoverage(inventory, coverage).cases).toHaveLength(1);
   expect(() => joinInventoryCoverage(inventory, { ...coverage, cases: [{ ...coverage.cases[0], id: "test_direct_registration.c" }] })).toThrow(/exact case ID/);
   expect(() => joinInventoryCoverage(inventory, { ...coverage, cases: [{ ...coverage.cases[0] }, { ...coverage.cases[0] }] })).toThrow(/duplicate coverage row/);
+});
+
+test("inventory coverage rejects missing, unknown, and duplicate exact IDs", () => {
+  const source = readFileSync(join(import.meta.dir, "fixtures/inventory/direct-registration.c"), "utf8");
+  const suite = extractSuite("test_direct_registration.c", source, "DirectFixtureTest");
+  const inventory: Inventory = {
+    schema: "box3d-oracle/inventory/v1",
+    source: { url: "https://github.com/erincatto/box3d.git", ref: "refs/heads/main", sha: "a".repeat(40), tree: "b".repeat(40) },
+    population: { half: "o6a", suiteFiles: [suite.file], suiteCount: 1, caseCount: 1 },
+    main: { file: "main.c", blobSha256: "c".repeat(64), registrations: [] },
+    suites: [suite],
+    cases: suite.cases,
+  };
+  const coverage = classifyInventory(inventory);
+  expect(() => joinInventoryCoverage(inventory, { ...coverage, cases: [] })).toThrow(/exact case join/);
+  expect(() => joinInventoryCoverage(inventory, { ...coverage, cases: [{ ...coverage.cases[0], id: "test_unknown.c::Unknown" }] })).toThrow(/not in the generated inventory/);
+});
+
+test("inventory update diff exposes synthetic additions and removals", () => {
+  const source = readFileSync(join(import.meta.dir, "fixtures/inventory/direct-registration.c"), "utf8");
+  const suite = extractSuite("test_direct_registration.c", source, "DirectFixtureTest");
+  const base: Inventory = {
+    schema: "box3d-oracle/inventory/v1",
+    source: { url: "https://github.com/erincatto/box3d.git", ref: "refs/heads/main", sha: "a".repeat(40), tree: "b".repeat(40) },
+    population: { half: "o6a", suiteFiles: [suite.file], suiteCount: 1, caseCount: 1 },
+    main: { file: "main.c", blobSha256: "c".repeat(64), registrations: [] },
+    suites: [suite],
+    cases: suite.cases,
+  };
+  const synthetic = { ...suite.cases[0], id: "test_direct_registration.c::SyntheticAdded" };
+  const current: Inventory = { ...base, population: { ...base.population, half: "complete", caseCount: 1 }, cases: [synthetic] };
+  expect(diffInventories(base, current)).toMatchObject({ added: [synthetic.id], removed: [suite.cases[0].id], summary: { added: 1, removed: 1, changed: 0 } });
 });
 
 test("upstream test evidence preserves a failed executable premise", () => {

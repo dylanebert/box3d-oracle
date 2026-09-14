@@ -2,9 +2,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DECLARED_SYMBOLS, O4_DECLARED_SYMBOLS, PATCHES } from "../hooks/patches";
-import { O6A_SUITE_FILES, joinInventoryCoverage, type Coverage, type Inventory } from "./inventory";
+import { ALL_SUITE_FILES, O6A_SUITE_FILES, O6B_SUITE_FILES, diffInventories, joinInventoryCoverage, mergeCoverage, mergeInventories, type Coverage, type Inventory, type InventoryUpdateDiff } from "./inventory";
 
-const required = ["README.md", "package.json", "bin/oracle.ts", "bin/inventory.ts", "bin/check.ts", "bin/compile-scenarios.ts", "test/oracle.test.ts", "test/fixtures/inventory/direct-registration.c", "test/fixtures/inventory/malformed-registration.c", "include/box3d_oracle_adapter.h", "adapter/main.c", "adapter/math.c", "adapter/geometry.c", "adapter/distance.c", "adapter/tree.c", "adapter/manifold.c", "adapter/query.c", "adapter/mover.c", "adapter/writer.c", "adapter/o3_main.c", "adapter/o4_main.c", "adapter/o4.c", "adapter/whitebox.c", "adapter/scenario.c", "hooks/patches.ts", "hooks/oracle_hooks.h", "schema/v1.json", "schema/v6.json", "schema/scenario-command-v1.json", "schema/inventory-v1.json", "schema/coverage-v1.json", "scenarios/commands-v1.json", "inventory/o6a.json", "coverage/o6a.json"];
+const required = ["README.md", "package.json", "bin/oracle.ts", "bin/inventory.ts", "bin/check.ts", "bin/compile-scenarios.ts", "test/oracle.test.ts", "test/fixtures/inventory/direct-registration.c", "test/fixtures/inventory/malformed-registration.c", "include/box3d_oracle_adapter.h", "adapter/main.c", "adapter/math.c", "adapter/geometry.c", "adapter/distance.c", "adapter/tree.c", "adapter/manifold.c", "adapter/query.c", "adapter/mover.c", "adapter/writer.c", "adapter/o3_main.c", "adapter/o4_main.c", "adapter/o4.c", "adapter/whitebox.c", "adapter/scenario.c", "hooks/patches.ts", "hooks/oracle_hooks.h", "schema/v1.json", "schema/v6.json", "schema/scenario-command-v1.json", "schema/inventory-v1.json", "schema/coverage-v1.json", "schema/inventory-update-diff-v1.json", "scenarios/commands-v1.json", "inventory/o6a.json", "coverage/o6a.json", "inventory/o6b.json", "coverage/o6b.json", "inventory/current.json", "coverage/current.json", "inventory/update-diff.json"];
 for (const path of required) {
   if (!existsSync(join(import.meta.dir, "..", path))) throw new Error(`missing required path: ${path}`);
 }
@@ -47,13 +47,31 @@ if (!oracle.includes("scenarioMigrate") || !oracle.includes("serializationOnly")
 if (PATCHES.length < 20 || PATCHES.some((patch) => !patch.marker.startsWith("recording.") && !patch.marker.startsWith("solver.") && !patch.marker.startsWith("physics.") && !patch.marker.startsWith("o4."))) throw new Error("O3/O4 hook markers are incomplete");
 if (DECLARED_SYMBOLS.length !== 5 || DECLARED_SYMBOLS.some((declared) => !declared.vector.endsWith(".v2"))) throw new Error("O3 declared provenance is incomplete");
 if (O4_DECLARED_SYMBOLS.length !== 12 || O4_DECLARED_SYMBOLS.some((declared) => !declared.vector.startsWith("o4."))) throw new Error("O4 declared provenance is incomplete");
-const inventory = JSON.parse(readFileSync(join(import.meta.dir, "..", "inventory/o6a.json"), "utf8")) as Inventory;
-const coverage = JSON.parse(readFileSync(join(import.meta.dir, "..", "coverage/o6a.json"), "utf8")) as Coverage;
-if (JSON.stringify(inventory.population.suiteFiles) !== JSON.stringify(O6A_SUITE_FILES)) throw new Error("O6a inventory suite selection is not allocator-through-id");
-if (inventory.population.suiteCount !== inventory.suites.length || inventory.population.caseCount !== inventory.cases.length) throw new Error("inventory population counts are not derived from its records");
-if (coverage.population.caseCount !== coverage.cases.length || coverage.population.suiteCount !== inventory.population.suiteCount) throw new Error("coverage population counts are not derived from its records");
+const inventoryO6a = JSON.parse(readFileSync(join(import.meta.dir, "..", "inventory/o6a.json"), "utf8")) as Inventory;
+const coverageO6a = JSON.parse(readFileSync(join(import.meta.dir, "..", "coverage/o6a.json"), "utf8")) as Coverage;
+const inventoryO6b = JSON.parse(readFileSync(join(import.meta.dir, "..", "inventory/o6b.json"), "utf8")) as Inventory;
+const coverageO6b = JSON.parse(readFileSync(join(import.meta.dir, "..", "coverage/o6b.json"), "utf8")) as Coverage;
+const inventory = JSON.parse(readFileSync(join(import.meta.dir, "..", "inventory/current.json"), "utf8")) as Inventory;
+const coverage = JSON.parse(readFileSync(join(import.meta.dir, "..", "coverage/current.json"), "utf8")) as Coverage;
+const update = JSON.parse(readFileSync(join(import.meta.dir, "..", "inventory/update-diff.json"), "utf8")) as InventoryUpdateDiff;
+if (JSON.stringify(inventoryO6a.population.suiteFiles) !== JSON.stringify(O6A_SUITE_FILES)) throw new Error("O6a inventory suite selection is not allocator-through-id");
+if (JSON.stringify(inventoryO6b.population.suiteFiles) !== JSON.stringify(O6B_SUITE_FILES)) throw new Error("O6b inventory suite selection is not joint-through-world");
+if (JSON.stringify(inventory.population.suiteFiles) !== JSON.stringify(ALL_SUITE_FILES)) throw new Error("cumulative inventory suite selection is not the exact official roster");
+for (const [label, item] of [["O6a", inventoryO6a], ["O6b", inventoryO6b], ["current", inventory]] as const) {
+  if (item.population.suiteCount !== item.suites.length || item.population.caseCount !== item.cases.length) throw new Error(`${label} inventory population counts are not derived from its records`);
+}
+for (const [label, item, expected] of [["O6a", coverageO6a, inventoryO6a], ["O6b", coverageO6b, inventoryO6b], ["current", coverage, inventory]] as const) {
+  if (item.population.caseCount !== item.cases.length || item.population.suiteCount !== expected.population.suiteCount) throw new Error(`${label} coverage population counts are not derived from its records`);
+}
+const joinedO6a = joinInventoryCoverage(inventoryO6a, coverageO6a);
+const joinedO6b = joinInventoryCoverage(inventoryO6b, coverageO6b);
 const joined = joinInventoryCoverage(inventory, coverage);
-if (joined.cases.length !== inventory.cases.length || joined.cases.some((item) => !item.id.includes("::"))) throw new Error("O6a inventory coverage join is incomplete");
+if (joinedO6a.cases.length !== inventoryO6a.cases.length || joinedO6b.cases.length !== inventoryO6b.cases.length || joined.cases.length !== inventory.cases.length || joined.cases.some((item) => !item.id.includes("::"))) throw new Error("inventory coverage join is incomplete");
+const merged = mergeInventories(inventoryO6a, inventoryO6b);
+if (JSON.stringify(merged) !== JSON.stringify(inventory)) throw new Error("current inventory is not the deterministic O6a/O6b join");
+if (JSON.stringify(mergeCoverage(coverageO6a, coverageO6b, inventory)) !== JSON.stringify(coverage)) throw new Error("current coverage is not the deterministic O6a/O6b join");
+if (JSON.stringify(diffInventories(inventoryO6a, inventory)) !== JSON.stringify(update)) throw new Error("inventory update diff is not derived from the two inventories");
+if (update.added.length !== inventoryO6b.cases.length || update.removed.length !== 0 || update.changed.length !== 0 || update.summary.added !== update.added.length || update.summary.removed !== update.removed.length || update.summary.changed !== update.changed.length) throw new Error("inventory update diff does not expose the O6b additions and removals exactly");
 if (!oracle.includes("generateBundleV3") || !oracle.includes("generateBundleV6") || !oracle.includes("V6_SCENARIO_SCHEMA") || !oracle.includes("sentinelTestV3") || !oracle.includes("fakeJointJson")) throw new Error("O4/O5f configuration and sentinel lanes are incomplete");
 if (!oracle.includes("rejectCopiedBody") || !oracle.includes("verifyPatchSet") || !oracle.includes("B3_ORACLE_SENTINELS")) throw new Error("O3 verifier lanes are incomplete");
 console.log("box3d-oracle check: PASS");

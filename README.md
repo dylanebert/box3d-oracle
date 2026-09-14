@@ -44,4 +44,17 @@ bun run check
 bun run test
 ```
 
-The tests create temporary fake Git remotes and cover an unreachable commit, a dirty/tree-mismatched checkout, a failing upstream test executable, outside-marker edits, copied-body fixtures, missing provenance, and sentinel declarations. `sentinel-test --schema v3` mutates every O4 family hook, including each public joint producer, and requires the corresponding output vector to change.
+The tests create temporary fake Git remotes and cover an unreachable commit, a dirty/tree-mismatched checkout, a failing upstream test executable, outside-marker edits, copied-body fixtures, missing provenance, exact inventory joins, and synthetic inventory additions/removals. `sentinel-test --schema v3` mutates every O4 family hook, including each public joint producer, and requires the corresponding output vector to change.
+
+Extract the cumulative official test inventory and exact coverage join from an empty official checkout:
+
+```sh
+bun bin/oracle.ts inventory \
+  --workspace <kex-root> \
+  --sha 47d7f7cc7e091142c08d11dc7d2e493c5d34f536 \
+  --output inventory/current.json \
+  --coverage coverage/current.json \
+  --diff inventory/update-diff.json
+```
+
+The command separately extracts the O6b joint-through-world half, joins it to the immutable O6a artifacts, and emits `inventory/o6b.json` and `coverage/o6b.json` when invoked with `--half o6b`. The cumulative result is ordered by the official 25-suite roster; every case ID is joined exactly once. Coverage rows are executable official-suite registrations, with no Shallot parity claim admitted at inventory time. The update diff reports exact case IDs added, removed, or changed; counts are derived from those records.

@@ -21,7 +21,7 @@
       "type": "object",
       "required": ["half", "suiteFiles", "suiteCount", "caseCount"],
       "properties": {
-        "half": { "const": "o6a" },
+        "half": { "enum": ["o6a", "o6b", "complete"] },
         "suiteFiles": { "type": "array", "items": { "type": "string" } },
         "suiteCount": { "type": "integer", "minimum": 1 },
         "caseCount": { "type": "integer", "minimum": 1 }
