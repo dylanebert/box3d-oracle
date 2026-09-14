@@ -24,6 +24,7 @@ function command(program: string, args: string[], cwd?: string): CommandResult {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 128 * 1024 * 1024,
   });
   if (result.error) throw new OracleError(`${program} failed to start: ${result.error.message}`);
   return {
@@ -431,13 +432,13 @@ function buildPatchedO4(source: string, build: string, disableSimd: boolean): { 
 
 function buildScenario(patched: string, build: string, table: string): { executable: string; hookDigest: string; cmake: string[] } {
   const generator = cmakeGenerator();
-  const cmake = ["-S", patched, "-B", build, ...(generator ? ["-G", generator] : []), "-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "-DBOX3D_SAMPLES=OFF", "-DBOX3D_BENCHMARKS=OFF", "-DBOX3D_DOCS=OFF", "-DBOX3D_UNIT_TESTS=ON", "-DBOX3D_VALIDATE=ON", "-DCMAKE_C_FLAGS=-DB3_ORACLE_HOOKS"];
+  const cmake = ["-S", patched, "-B", build, ...(generator ? ["-G", generator] : []), "-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "-DBOX3D_DOUBLE_PRECISION:BOOL=OFF", "-DBOX3D_SAMPLES=OFF", "-DBOX3D_BENCHMARKS=OFF", "-DBOX3D_DOCS=OFF", "-DBOX3D_UNIT_TESTS=ON", "-DBOX3D_VALIDATE=ON", "-DCMAKE_C_FLAGS=-DB3_ORACLE_HOOKS"];
   checked("cmake", cmake);
   checked("cmake", ["--build", build, "--target", "box3d"]);
   const adapterBuild = join(build, "scenario-adapter");
   mkdirSync(adapterBuild, { recursive: true });
   const object = join(adapterBuild, "scenario.o");
-  checked(compiler(), ["-std=c11", "-Wall", "-Wextra", "-Werror", "-I", table, "-I", join(import.meta.dir, "..", "include"), "-I", join(patched, "include"), "-I", join(patched, "src"), "-c", join(import.meta.dir, "..", "adapter", "scenario.c"), "-o", object]);
+  checked(compiler(), ["-O3", "-ffp-contract=off", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", table, "-I", join(import.meta.dir, "..", "include"), "-I", join(patched, "include"), "-I", join(patched, "src"), "-c", join(import.meta.dir, "..", "adapter", "scenario.c"), "-o", object]);
   const executable = join(adapterBuild, "box3d-scenario-adapter");
   checked(compiler(), [object, join(build, "src", "libbox3d.a"), "-lm", "-o", executable]);
   return { executable, hookDigest: hookDigest(), cmake: cmake.map((value) => value === patched ? "<patched-official-source>" : value === build ? "<scenario-build>" : value) };
@@ -738,7 +739,8 @@ const FOUNDATION_SCENARIO_ROSTER = ["free-fall", "sphere-drop", "box-stack", "sp
 const JOINT_SCENARIO_ROSTER = ["revolute-dd", "revolute-pendulum", "revolute-motor", "revolute-limit", "revolute-chain", "weld-dd", "parallel", "joint-contacts", "motor", "motor-spring", "distance", "distance-spring", "prismatic", "prismatic-motor", "spherical", "spherical-limits", "spherical-motor", "wheel", "wheel-spin", "wheel-steer", "ragdoll"] as const;
 const SURFACE_SCENARIO_ROSTER = ["ccd-drop", "ccd-bullet", "mesh-box", "mesh-sphere", "mesh-capsule", "mesh-ccd", "height-box", "height-sphere", "height-capsule", "height-ccd"] as const;
 const COMPOUND_SENSOR_SCENARIO_ROSTER = ["compound-hull", "compound-capsule", "compound-sphere", "compound-mesh", "compound-ccd", "sensor"] as const;
-const SCENARIO_FAMILIES: Record<string, string[]> = { foundation: [...FOUNDATION_SCENARIO_ROSTER], joints: [...JOINT_SCENARIO_ROSTER], surfaces: [...SURFACE_SCENARIO_ROSTER], "compound-sensor": [...COMPOUND_SENSOR_SCENARIO_ROSTER], all: [...FOUNDATION_SCENARIO_ROSTER, ...JOINT_SCENARIO_ROSTER, ...SURFACE_SCENARIO_ROSTER, ...COMPOUND_SENSOR_SCENARIO_ROSTER] };
+const BENCHMARK_SCENARIO_ROSTER = ["bench-pyramid", "bench-many-pyramids", "bench-joint-grid", "bench-washer", "bench-large-world", "bench-trees", "bench-junkyard", "bench-rain", "drift"] as const;
+const SCENARIO_FAMILIES: Record<string, string[]> = { foundation: [...FOUNDATION_SCENARIO_ROSTER], joints: [...JOINT_SCENARIO_ROSTER], surfaces: [...SURFACE_SCENARIO_ROSTER], "compound-sensor": [...COMPOUND_SENSOR_SCENARIO_ROSTER], benchmarks: [...BENCHMARK_SCENARIO_ROSTER], all: [...FOUNDATION_SCENARIO_ROSTER, ...JOINT_SCENARIO_ROSTER, ...SURFACE_SCENARIO_ROSTER, ...COMPOUND_SENSOR_SCENARIO_ROSTER, ...BENCHMARK_SCENARIO_ROSTER] };
 
 function legacyScenarioSource(cache: string, sha: string): string {
   requireFullSha(sha);
@@ -766,7 +768,55 @@ function buildLegacyScenario(source: string, official: string, build: string): s
   const anchor = "if ( step % B3_FIXTURE_STATE_INTERVAL == 0 || isLast )";
   if (input.split(anchor).length !== 2) throw new OracleError("legacy serialization patch anchor is not unique");
   const serializationOnly = input.replace(anchor, "if ( true ) /* B3_ORACLE_SERIALIZATION_ONLY */");
-  writeFileSync(join(migrationRoot, "fixtures", "gen.c"), serializationOnly);
+  const stateStart = serializationOnly.indexOf("static void WriteBodyStates(");
+  const stateEnd = serializationOnly.indexOf("\nstatic void RunScene(", stateStart);
+  if (stateStart < 0 || stateEnd < 0 || serializationOnly.indexOf("static void WriteBodyStates(", stateStart + 1) >= 0) throw new OracleError("legacy getter serialization patch anchor is not unique");
+  const bodyCapture = `static b3BodyId b3OracleBodyIds[512];
+static int b3OracleBodyCount;
+static b3BodyId b3OracleCreateBody( b3WorldId worldId, const b3BodyDef* def )
+{
+\tb3BodyId id = b3CreateBody( worldId, def );
+\tif ( b3OracleBodyCount < 512 ) b3OracleBodyIds[b3OracleBodyCount++] = id;
+\treturn id;
+}
+#define b3CreateBody b3OracleCreateBody
+
+`;
+  const getterStates = `static void WriteBodyStates( FILE* f, b3World* world )
+{
+\tfprintf( f, "[" );
+\tint bodyCount = world->bodies.count;
+\tbool first = true;
+\tfor ( int i = 0; i < bodyCount; ++i )
+\t{
+\t\tb3Body* body = world->bodies.data + i;
+\t\tif ( body->id != i ) continue;
+\t\tb3BodyId bodyId = b3OracleBodyIds[i];
+\t\tb3WorldTransform transform = b3Body_GetTransform( bodyId );
+\t\tif ( !first ) fprintf( f, "," );
+\t\tfirst = false;
+\t\tfprintf( f, "{\\\"p\\\":[" );
+\t\tWriteFloat( f, transform.p.x ); fprintf( f, "," ); WriteFloat( f, transform.p.y ); fprintf( f, "," ); WriteFloat( f, transform.p.z );
+\t\tfprintf( f, "],\\\"q\\\":[" );
+\t\tWriteFloat( f, transform.q.v.x ); fprintf( f, "," ); WriteFloat( f, transform.q.v.y ); fprintf( f, "," ); WriteFloat( f, transform.q.v.z ); fprintf( f, "," ); WriteFloat( f, transform.q.s );
+\t\tfprintf( f, "]" );
+\t\tb3BodyState* state = b3GetBodyState( world, body );
+\t\tif ( state != NULL )
+\t\t{
+\t\t\tb3Vec3 linear = b3Body_GetLinearVelocity( bodyId ); b3Vec3 angular = b3Body_GetAngularVelocity( bodyId );
+\t\t\tfprintf( f, ",\\\"v\\\":[" ); WriteFloat( f, linear.x ); fprintf( f, "," ); WriteFloat( f, linear.y ); fprintf( f, "," ); WriteFloat( f, linear.z );
+\t\t\tfprintf( f, "],\\\"w\\\":[" ); WriteFloat( f, angular.x ); fprintf( f, "," ); WriteFloat( f, angular.y ); fprintf( f, "," ); WriteFloat( f, angular.z ); fprintf( f, "]" );
+\t\t}
+\t\tfprintf( f, "}" );
+\t}
+\tfprintf( f, "]" );
+}
+`;
+  const capturedSource = serializationOnly.replace("#include <stdint.h>\n", "#include <stdint.h>\n\n" + bodyCapture);
+  const capturedStateStart = capturedSource.indexOf("static void WriteBodyStates(");
+  const capturedStateEnd = capturedSource.indexOf("\nstatic void RunScene(", capturedStateStart);
+  const getterSerialization = capturedSource.slice(0, capturedStateStart) + getterStates + capturedSource.slice(capturedStateEnd).replace("\tscene->build( worldId );", "\tb3OracleBodyCount = 0;\n\tscene->build( worldId );");
+  writeFileSync(join(migrationRoot, "fixtures", "gen.c"), getterSerialization);
   const object = join(build, "legacy-gen.o");
   checked(compiler(), ["-std=c11", "-ffunction-sections", "-fdata-sections", "-I", join(migrationRoot, "include"), "-I", join(migrationRoot, "src"), "-I", join(migrationRoot, "shared"), "-c", join(migrationRoot, "fixtures", "gen.c"), "-o", object]);
   checked("cmake", ["--build", build, "--target", "shared"]);
@@ -879,15 +929,16 @@ function scenarioMigrate(workspace: string, sha: string, legacySha: string, fami
   }
   const mutationCorpus = join(build, "mutation-commands-v1.json");
   const mutation = JSON.parse(readFileSync(corpus, "utf8")) as { scenarios: Array<{ name: string; commands: Array<Record<string, unknown>> }> };
-  const mutationTargetName = family === "joints" ? "revolute-motor" : family === "surfaces" ? "ccd-bullet" : family === "compound-sensor" || family === "all" ? "compound-hull" : "free-fall";
+  const mutationTargetName = family === "joints" ? "revolute-motor" : family === "surfaces" ? "ccd-bullet" : family === "compound-sensor" || family === "all" ? "compound-hull" : family === "benchmarks" ? "bench-large-world" : "free-fall";
   const mutationTargetIndex = mutation.scenarios.findIndex((scenario) => scenario.name === mutationTargetName);
   if (mutationTargetIndex < 0) throw new OracleError(`${mutationTargetName} mutation target is missing`);
   const mutationTarget = mutation.scenarios[mutationTargetIndex];
-  const mutationCommand = mutationTarget.commands.find((command) => family === "joints" ? command.op === "joint.revolute" : family === "surfaces" ? command.op === "body.create" && command.id === "b2" : family === "compound-sensor" || family === "all" ? command.op === "resource.compound" : command.op === "body.create");
+  const mutationCommand = mutationTarget.commands.find((command) => family === "joints" ? command.op === "joint.revolute" : family === "surfaces" ? command.op === "body.create" && command.id === "b2" : family === "compound-sensor" || family === "all" ? command.op === "resource.compound" : family === "benchmarks" ? command.op === "body.spawn" : command.op === "body.create");
   if (!mutationCommand) throw new OracleError(`${mutationTargetName} mutation command is missing`);
-  const mutationDescription = family === "joints" ? "joint.revolute.motorSpeed" : family === "surfaces" ? "ccd-bullet.body.create.linearVelocity.x" : family === "compound-sensor" || family === "all" ? "compound-hull.first-child.transform.p.x" : "body.create.angularVelocity";
+  const mutationDescription = family === "joints" ? "joint.revolute.motorSpeed" : family === "surfaces" ? "ccd-bullet.body.create.linearVelocity.x" : family === "compound-sensor" || family === "all" ? "compound-hull.first-child.transform.p.x" : family === "benchmarks" ? "bench-large-world.body.spawn.position.x" : "body.create.angularVelocity";
   if (family === "joints") mutationCommand.motorSpeed = "0x40a00000";
   else if (family === "surfaces") mutationCommand.linearVelocity = ["0x42c80000", "0x00000000", "0x00000000"];
+  else if (family === "benchmarks") mutationCommand.position = ["0x42c80000", "0x3fc00000", "0x00000000"];
   else if (family === "compound-sensor" || family === "all") { const children = mutationCommand.hulls as Array<Record<string, unknown>>; const first = children?.[0]; if (!first) throw new OracleError("compound-hull first child is missing"); const transform = first.transform as Record<string, unknown>; (transform.p as string[])[0] = "0x3f800000"; }
   else mutationCommand.angularVelocity = ["0x40000000", "0x40a00000", "0x40000000"];
   writeFileSync(mutationCorpus, canonicalJson(mutation));
