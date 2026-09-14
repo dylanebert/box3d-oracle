@@ -432,13 +432,13 @@ function buildPatchedO4(source: string, build: string, disableSimd: boolean): { 
 
 function buildScenario(patched: string, build: string, table: string): { executable: string; hookDigest: string; cmake: string[] } {
   const generator = cmakeGenerator();
-  const cmake = ["-S", patched, "-B", build, ...(generator ? ["-G", generator] : []), "-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "-DBOX3D_SAMPLES=OFF", "-DBOX3D_BENCHMARKS=OFF", "-DBOX3D_DOCS=OFF", "-DBOX3D_UNIT_TESTS=ON", "-DBOX3D_VALIDATE=ON", "-DCMAKE_C_FLAGS=-DB3_ORACLE_HOOKS"];
+  const cmake = ["-S", patched, "-B", build, ...(generator ? ["-G", generator] : []), "-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "-DBOX3D_DOUBLE_PRECISION:BOOL=OFF", "-DBOX3D_SAMPLES=OFF", "-DBOX3D_BENCHMARKS=OFF", "-DBOX3D_DOCS=OFF", "-DBOX3D_UNIT_TESTS=ON", "-DBOX3D_VALIDATE=ON", "-DCMAKE_C_FLAGS=-DB3_ORACLE_HOOKS"];
   checked("cmake", cmake);
   checked("cmake", ["--build", build, "--target", "box3d"]);
   const adapterBuild = join(build, "scenario-adapter");
   mkdirSync(adapterBuild, { recursive: true });
   const object = join(adapterBuild, "scenario.o");
-  checked(compiler(), ["-std=c11", "-Wall", "-Wextra", "-Werror", "-I", table, "-I", join(import.meta.dir, "..", "include"), "-I", join(patched, "include"), "-I", join(patched, "src"), "-c", join(import.meta.dir, "..", "adapter", "scenario.c"), "-o", object]);
+  checked(compiler(), ["-O3", "-ffp-contract=off", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", table, "-I", join(import.meta.dir, "..", "include"), "-I", join(patched, "include"), "-I", join(patched, "src"), "-c", join(import.meta.dir, "..", "adapter", "scenario.c"), "-o", object]);
   const executable = join(adapterBuild, "box3d-scenario-adapter");
   checked(compiler(), [object, join(build, "src", "libbox3d.a"), "-lm", "-o", executable]);
   return { executable, hookDigest: hookDigest(), cmake: cmake.map((value) => value === patched ? "<patched-official-source>" : value === build ? "<scenario-build>" : value) };
