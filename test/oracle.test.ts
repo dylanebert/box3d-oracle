@@ -7,6 +7,23 @@ import { rejectCopiedBody, verifyDeclaredSymbols, verifyPatchSet, verifyPristine
 import { DECLARED_SYMBOLS, PATCHES } from "../hooks/patches";
 import { classifyInventory, diffInventories, extractSuite, joinInventoryCoverage, type Inventory } from "../bin/inventory";
 
+test("mover corpus compiles supplied state and both velocity branches", () => {
+  const root = mkdtempSync(join(tmpdir(), "mover-table-test-"));
+  try {
+    const corpus = join(import.meta.dir, "..", "scenarios", "mover-v1.json");
+    const output = join(root, "scenario_table.h");
+    const result = spawnSync("bun", [join(import.meta.dir, "..", "bin", "compile-scenarios.ts"), corpus, output], { encoding: "utf8" });
+    expect(result.status).toBe(0);
+    const data = JSON.parse(readFileSync(corpus, "utf8"));
+    expect(data.scenarios.map((s: { name: string }) => s.name)).toEqual(["floor", "wall", "step-low", "step-high", "slope-hull", "mesh", "heightfield", "dynamic-sphere", "wall-unclipped", "rising"]);
+    const table = readFileSync(output, "utf8");
+    expect(table).toContain("SCENARIO_MOVER_SOLVE=28");
+    expect(table.match(/\{ 28, "move"/g)?.length).toBe(10);
+    expect(data.scenarios[8].commands.at(-1).clipVelocity).toBe(false);
+    expect(data.scenarios[1].commands.at(-1).clipVelocity).toBe(true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 function git(cwd: string, ...args: string[]): string {
   const result = spawnSync("git", args, {
     cwd,

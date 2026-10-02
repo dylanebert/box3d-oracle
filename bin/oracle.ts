@@ -439,7 +439,8 @@ function buildScenario(patched: string, build: string, table: string): { executa
   const adapterBuild = join(build, "scenario-adapter");
   mkdirSync(adapterBuild, { recursive: true });
   const object = join(adapterBuild, "scenario.o");
-  checked(compiler(), ["-O3", "-ffp-contract=off", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", table, "-I", join(import.meta.dir, "..", "include"), "-I", join(patched, "include"), "-I", join(patched, "src"), "-c", join(import.meta.dir, "..", "adapter", "scenario.c"), "-o", object]);
+  checked(compiler(), ["-O3", "-ffp-contract=off", ...(process.env.B3_MOVER_SENTINEL === "1" ? ["-DB3_MOVER_SENTINEL"] : []), "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", table, "-I", join(import.meta.dir, "..", "include"), "-I", join(patched, "include"), "-I", join(import.meta.dir, "..", "hooks"), "-MMD", "-MF", join(adapterBuild, "scenario.d"), "-c", join(import.meta.dir, "..", "adapter", "scenario.c"), "-o", object]);
+  if (readFileSync(join(adapterBuild, "scenario.d"), "utf8").includes(join(patched, "src"))) throw new OracleError("scenario adapter includes private source");
   const executable = join(adapterBuild, "box3d-scenario-adapter");
   checked(compiler(), [object, join(build, "src", "libbox3d.a"), "-lm", "-o", executable]);
   return { executable, hookDigest: hookDigest(), cmake: cmake.map((value) => value === patched ? "<patched-official-source>" : value === build ? "<scenario-build>" : value) };
@@ -1056,6 +1057,60 @@ function generateBundleV6(workspace: string, sha: string, output: string): Recor
   }
 }
 
+function generateMoverBundle(workspace: string, sha: string, output: string): Record<string, unknown> {
+  requireFullSha(sha); ensureEmptyDirectory(output);
+  const root = resolve(workspace), member = join(root, "projects", "box3d-oracle");
+  const corpusPath = join(member, "scenarios", "mover-v1.json");
+  const corpus = JSON.parse(readFileSync(corpusPath, "utf8")) as { schema: string; corpusVersion: number; scenarios: Array<{ id: string; name: string; commands: unknown[] }> };
+  const roster = ["floor", "wall", "step-low", "step-high", "slope-hull", "mesh", "heightfield", "dynamic-sphere", "wall-unclipped", "rising"];
+  if (corpus.schema !== "box3d-oracle/scenario-command/v1" || corpus.corpusVersion !== 1 || JSON.stringify(corpus.scenarios.map(s => s.name)) !== JSON.stringify(roster) || corpus.scenarios.some(s => s.id !== `m1.${s.name}.v1`)) throw new OracleError("mover corpus roster mismatch");
+  const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
+  const remote = join(cache, "official.git"); verifyReachable(OFFICIAL_SOURCE_URL, sha, remote);
+  const official = materializePristine(remote, sha), pristine = verifyPristine(official, sha);
+  const patched = join(cache, "checkouts", `${sha}-mover-patched`);
+  rmSync(patched, { recursive: true, force: true }); patchOfficialSource(official, patched);
+  const build = join(cache, "scenario-builds", `${sha}-mover`);
+  rmSync(build, { recursive: true, force: true }); mkdirSync(build, { recursive: true });
+  const table = join(build, "scenario_table.h");
+  checked("bun", [join(member, "bin", "compile-scenarios.ts"), corpusPath, table]);
+  const evidence = buildScenario(patched, build, dirname(table));
+  const cases = corpus.scenarios.map((scene, index) => {
+    const result = command(evidence.executable, ["--index", String(index)]);
+    if (result.status !== 0) throw new OracleError(`mover scenario failed: ${scene.name}: ${result.stderr}`);
+    return { id: scene.id, family: "mover", symbol: "CharacterMover::SolveMove", input: scene, output: JSON.parse(result.stdout) };
+  });
+  const moves = cases.map(c => c.output.observations[0]);
+  if (process.env.B3_MOVER_SENTINEL !== "1" && (moves[1].passes < 2 || !moves[7].impulses.some((p: { impulse: string[] }) => p.impulse.some(x => x !== "0x00000000" && x !== "0x80000000")))) throw new OracleError("mover corpus lacks multi-pass wall or dynamic push evidence");
+  const files: BundleFile[] = [
+    { name: "schema.json", data: readFileSync(join(member, "schema", "v7.json"), "utf8") },
+    { name: "cases.json", data: canonicalJson({ schema: "box3d-oracle/v7", cases }) },
+    { name: "membership.json", data: canonicalJson({ schema: "box3d-oracle/v7", caseCount: cases.length, roster: cases.map(c => c.id) }) },
+    { name: "provenance.json", data: canonicalJson({ adapter: "adapter/scenario.c", transcription: "adapter/mover_sample.h", transcriptionSha256: sha256File(join(member, "adapter", "mover_sample.h")), corpusDigest: sha256File(corpusPath), executableSha256: sha256File(evidence.executable), cmake: evidence.cmake, compiler: compilerEvidence() }) },
+  ];
+  writeBundleFiles(output, files);
+  const manifest = { schema: "box3d-oracle/manifest-v7", bundle: { upstreamSha: sha, schema: "v7", identity: `${sha}/v7` }, upstream: { url: OFFICIAL_SOURCE_URL, ref: OFFICIAL_SOURCE_REF, sha, tree: pristine.tree }, oracle: { memberCommit: checked("git", ["rev-parse", "HEAD"], member).stdout.trim(), generatorSha256: sha256File(join(import.meta.dir, "oracle.ts")) }, caseCount: cases.length, fileDigests: Object.fromEntries(files.map(f => [f.name, sha256File(join(output, f.name))])), generation: { readsShallot: false, readsGolds: false, outputArithmetic: false } };
+  writeFileSync(join(output, "manifest.json"), canonicalJson(manifest)); verifyPristine(official, sha); return manifest;
+}
+
+function sentinelTestMover(workspace: string, sha: string): void {
+  const baseline = mkdtempSync(join(tmpdir(), "mover-sentinel-base-"));
+  const mutation = mkdtempSync(join(tmpdir(), "mover-sentinel-mutated-"));
+  const previous = process.env.B3_MOVER_SENTINEL;
+  try {
+    delete process.env.B3_MOVER_SENTINEL; generateMoverBundle(workspace, sha, baseline);
+    process.env.B3_MOVER_SENTINEL = "1"; generateMoverBundle(workspace, sha, mutation);
+    type VectorCase = { id: string; output: { observations: Array<{ position: string[]; velocity: string[] }> } };
+    const read = (path: string) => (JSON.parse(readFileSync(join(path, "cases.json"), "utf8")) as { cases: VectorCase[] }).cases;
+    const a = read(baseline), b = read(mutation);
+    const changed = a.filter((c, i) => JSON.stringify(c.output.observations.map(o => [o.position, o.velocity])) !== JSON.stringify(b[i].output.observations.map(o => [o.position, o.velocity]))).map(c => c.id);
+    if (!changed.includes("m1.wall.v1")) throw new OracleError("one-pass mover sentinel did not change wall vectors");
+    console.log(JSON.stringify({ mutation: "SolveMove loop bound 5 -> 1", changedVectorCases: changed }));
+  } finally {
+    if (previous === undefined) delete process.env.B3_MOVER_SENTINEL; else process.env.B3_MOVER_SENTINEL = previous;
+    rmSync(baseline, { recursive: true, force: true }); rmSync(mutation, { recursive: true, force: true });
+  }
+}
+
 function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
@@ -1115,11 +1170,11 @@ function reproduce(workspace: string, bundle: string): void {
   const manifest = JSON.parse(readFileSync(join(bundleRoot, "manifest.json"), "utf8")) as { bundle?: { upstreamSha?: string; schema?: string } };
   const sha = manifest.bundle?.upstreamSha;
   const schema = manifest.bundle?.schema;
-  if (!sha || (schema !== "v1" && schema !== "v2" && schema !== "v3" && schema !== "v6")) throw new OracleError("bundle manifest does not identify schema v1, v2, v3, or v6 and a full upstream SHA");
+  if (!sha || (schema !== "v1" && schema !== "v2" && schema !== "v3" && schema !== "v6" && schema !== "v7")) throw new OracleError("bundle manifest does not identify schema v1, v2, v3, v6, or v7 and a full upstream SHA");
   const first = mkdtempSync(join(tmpdir(), "box3d-oracle-reproduce-a-"));
   const second = mkdtempSync(join(tmpdir(), "box3d-oracle-reproduce-b-"));
   try {
-    const generate = schema === "v6" ? generateBundleV6 : schema === "v3" ? generateBundleV3 : schema === "v2" ? generateBundleV2 : generateBundle;
+    const generate = schema === "v7" ? generateMoverBundle : schema === "v6" ? generateBundleV6 : schema === "v3" ? generateBundleV3 : schema === "v2" ? generateBundleV2 : generateBundle;
     generate(workspace, sha, first);
     generate(workspace, sha, second);
     compareTrees(first, second);
@@ -1170,12 +1225,13 @@ if (import.meta.main) {
       console.log(`upstream-test: PASS ${args.sha}`); console.log(`receipt: ${relative(resolve(args.workspace), result.receiptPath)}`); console.log(JSON.stringify(result.receipt, null, 2));
     } else if (args.command === "sentinel-test") {
       if (!args.sha) throw new OracleError("--sha is required for sentinel-test");
-      if (args.schema === "v3") sentinelTestV3(args.workspace, args.sha);
+      if (args.schema === "v7") sentinelTestMover(args.workspace, args.sha);
+      else if (args.schema === "v3") sentinelTestV3(args.workspace, args.sha);
       else sentinelTest(args.workspace, args.sha);
       console.log(`sentinel-test: PASS ${args.sha}`);
     } else if (args.command === "generate") {
       if (!args.sha || !args.output) throw new OracleError("generate requires --sha and --output");
-      const result = args.schema === "v6" ? generateBundleV6(args.workspace, args.sha, resolve(args.output)) : args.schema === "v3" ? generateBundleV3(args.workspace, args.sha, resolve(args.output)) : args.schema === "v2" ? generateBundleV2(args.workspace, args.sha, resolve(args.output)) : generateBundle(args.workspace, args.sha, resolve(args.output));
+      const result = args.schema === "v7" ? generateMoverBundle(args.workspace, args.sha, resolve(args.output)) : args.schema === "v6" ? generateBundleV6(args.workspace, args.sha, resolve(args.output)) : args.schema === "v3" ? generateBundleV3(args.workspace, args.sha, resolve(args.output)) : args.schema === "v2" ? generateBundleV2(args.workspace, args.sha, resolve(args.output)) : generateBundle(args.workspace, args.sha, resolve(args.output));
       console.log(`generate: PASS ${String((result.bundle as { identity: string }).identity)}`);
     } else {
       if (!args.bundle) throw new OracleError("reproduce requires --bundle");

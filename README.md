@@ -37,6 +37,12 @@ bun projects/box3d-oracle/bin/oracle.ts generate \\
 
 `reproduce --workspace <kex-root> --bundle <bundle>` creates two fresh bundles under distinct `/tmp` directories, checks their byte equality, then compares the result with the committed bundle. Generation refuses a non-empty output and never reads Shallot files or existing golds. The bundle manifest records the official URL, channel, SHA/tree, oracle commit, compiler/CMake options, schema, executable digest, membership, patch digest, link-map/`nm` provenance, and generated-file digests. The default `generate` command remains v1 for O2 reproduction; pass `--schema v2` for O3 or `--schema v3` for O4.
 
+## Mover Lane
+
+`generate --schema v7` records the ten cases in `scenarios/mover-v1.json`, independently of the v1–v6 populations. `mover.solve` supplies position, rotation, capsule, velocity, pogo velocity, time step and a `clipVelocity` flag. `adapter/mover_sample.h` transcribes the MIT sample's pogo ray, five-pass collide/solve/cast loop, dynamic-body push and velocity resolution; it does not apply friction, acceleration or gravity. Shapes have default mover behavior and the ignore-shape list is empty. Queries keep the sample's filters.
+
+The lane records position, velocity, pogo velocity, ground flag, final plane count and summed applied linear impulse for each dynamic body as f32 hexadecimal bits. Ground flag and plane count use f32 encodings of their numeric values. Pass count and plane-solver iteration count are additional integer diagnostics. `sentinel-test --schema v7` changes the loop bound from five passes to one and requires the wall's position or velocity vectors to change. `reproduce` supports this lane's byte-equality check.
+
 ## Local Checks
 
 ```sh
