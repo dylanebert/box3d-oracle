@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { expect, test } from "bun:test";
-import { rejectCopiedBody, verifyDeclaredSymbols, verifyPatchSet, verifyPristine, verifyReachable, verifyTreeMatches, runUpstreamTest } from "../bin/oracle";
+import { rejectCopiedScenarioAdapter, rejectCopiedBody, verifyDeclaredSymbols, verifyPatchSet, verifyPristine, verifyReachable, verifyTreeMatches, runUpstreamTest } from "../bin/oracle";
 import { DECLARED_SYMBOLS, PATCHES } from "../hooks/patches";
 import { classifyInventory, diffInventories, extractSuite, joinInventoryCoverage, type Inventory } from "../bin/inventory";
 
@@ -21,6 +21,25 @@ test("mover corpus compiles supplied state and both velocity branches", () => {
     expect(table.match(/\{ 28, "move"/g)?.length).toBe(10);
     expect(data.scenarios[8].commands.at(-1).clipVelocity).toBe(false);
     expect(data.scenarios[1].commands.at(-1).clipVelocity).toBe(true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("scenario adapter and transcription reject a pasted library body", () => {
+  const root = mkdtempSync(join(tmpdir(), "copied-scenario-test-"));
+  try {
+    const adapter = join(root, "adapter"); mkdirSync(adapter); mkdirSync(join(root, "src"));
+    const libraryBody = readFileSync(join(import.meta.dir, "fixtures", "copied-library-body.c"), "utf8");
+    writeFileSync(join(root, "src", "arena_allocator.c"), libraryBody);
+    for (const name of ["scenario.c", "mover_sample.h"]) writeFileSync(join(adapter, name), readFileSync(join(import.meta.dir, "..", "adapter", name), "utf8"));
+    expect(() => rejectCopiedScenarioAdapter(root, adapter)).not.toThrow();
+    for (const name of ["scenario.c", "mover_sample.h"]) {
+      const path = join(adapter, name), original = readFileSync(path, "utf8");
+      writeFileSync(path, `${original}\n${libraryBody}`);
+      expect(() => rejectCopiedScenarioAdapter(root, adapter)).toThrow("copied upstream implementation run");
+      writeFileSync(path, original);
+    }
+    // Bind the production generation path, not just the standalone detector.
+    expect(readFileSync(join(import.meta.dir, "..", "bin", "oracle.ts"), "utf8")).toContain("rejectCopiedScenarioAdapter(pristine);");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

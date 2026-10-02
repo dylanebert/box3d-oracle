@@ -86,6 +86,13 @@ export function rejectCopiedBody(additions: string[], upstreamSources: string[],
   }
 }
 
+export function rejectCopiedScenarioAdapter(pristine: string, adapterRoot = join(import.meta.dir, "..", "adapter")): void {
+  const sources = readdirSync(join(pristine, "src")).filter(name => name.endsWith(".c")).map(name => readFileSync(join(pristine, "src", name), "utf8"));
+  for (const name of ["scenario.c", "mover_sample.h"]) {
+    rejectCopiedBody([readFileSync(join(adapterRoot, name), "utf8")], sources, 32);
+  }
+}
+
 function hookDigest(): string {
   return digest(`${JSON.stringify(PATCHES)}\n${readFileSync(join(import.meta.dir, "..", "hooks", "oracle_hooks.h"), "utf8")}`);
 }
@@ -111,6 +118,7 @@ function patchOfficialSource(pristine: string, patched: string): { digest: strin
   writeFileSync(join(patched, "src", "oracle_hooks.h"), readFileSync(join(import.meta.dir, "..", "hooks", "oracle_hooks.h")));
   const upstreamSources = readdirSync(join(pristine, "src")).filter((name) => name.endsWith(".c")).map((name) => readFileSync(join(pristine, "src", name), "utf8"));
   rejectCopiedBody(additions, upstreamSources, 32);
+  rejectCopiedScenarioAdapter(pristine);
   return { digest: hookDigest() };
 }
 
