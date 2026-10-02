@@ -28,8 +28,18 @@ test("scenario adapter and transcription reject a pasted library body", () => {
   const root = mkdtempSync(join(tmpdir(), "copied-scenario-test-"));
   try {
     const adapter = join(root, "adapter"); mkdirSync(adapter); mkdirSync(join(root, "src"));
-    const libraryBody = readFileSync(join(import.meta.dir, "fixtures", "copied-library-body.c"), "utf8");
-    writeFileSync(join(root, "src", "arena_allocator.c"), libraryBody);
+    const libraryBody = `
+      int syntheticLibraryFold(int* values, int count, int seed) {
+        int accumulator = seed;
+        for (int index = 0; index < count; ++index) {
+          int weighted = values[index] * (index + 7);
+          accumulator = (accumulator ^ weighted) + 13;
+          values[index] = accumulator - seed;
+        }
+        return accumulator;
+      }
+    `;
+    writeFileSync(join(root, "src", "synthetic.c"), libraryBody);
     for (const name of ["scenario.c", "mover_sample.h"]) writeFileSync(join(adapter, name), readFileSync(join(import.meta.dir, "..", "adapter", name), "utf8"));
     expect(() => rejectCopiedScenarioAdapter(root, adapter)).not.toThrow();
     for (const name of ["scenario.c", "mover_sample.h"]) {
