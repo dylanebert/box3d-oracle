@@ -24,7 +24,7 @@ test("mover corpus compiles supplied state and both velocity branches", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scenario adapter and transcription reject a pasted library body", () => {
+test("scenario, mover and TOI adapters reject a pasted library body", () => {
   const root = mkdtempSync(join(tmpdir(), "copied-scenario-test-"));
   try {
     const adapter = join(root, "adapter"); mkdirSync(adapter); mkdirSync(join(root, "src"));
@@ -40,16 +40,18 @@ test("scenario adapter and transcription reject a pasted library body", () => {
       }
     `;
     writeFileSync(join(root, "src", "synthetic.c"), libraryBody);
-    for (const name of ["scenario.c", "mover_sample.h"]) writeFileSync(join(adapter, name), readFileSync(join(import.meta.dir, "..", "adapter", name), "utf8"));
+    for (const name of ["scenario.c", "mover_sample.h", "toi.c"]) writeFileSync(join(adapter, name), readFileSync(join(import.meta.dir, "..", "adapter", name), "utf8"));
     expect(() => rejectCopiedScenarioAdapter(root, adapter)).not.toThrow();
-    for (const name of ["scenario.c", "mover_sample.h"]) {
+    for (const name of ["scenario.c", "mover_sample.h", "toi.c"]) {
       const path = join(adapter, name), original = readFileSync(path, "utf8");
       writeFileSync(path, `${original}\n${libraryBody}`);
       expect(() => rejectCopiedScenarioAdapter(root, adapter)).toThrow("copied upstream implementation run");
       writeFileSync(path, original);
     }
     // Bind the production generation path, not just the standalone detector.
-    expect(readFileSync(join(import.meta.dir, "..", "bin", "oracle.ts"), "utf8")).toContain("rejectCopiedScenarioAdapter(pristine);");
+    const generator = readFileSync(join(import.meta.dir, "..", "bin", "oracle.ts"), "utf8");
+    expect(generator).toContain("rejectCopiedScenarioAdapter(pristine);");
+    expect(generator.split("function generateTOIBundle(")[1].split("\nfunction ")[0]).toContain("rejectCopiedScenarioAdapter(source);");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

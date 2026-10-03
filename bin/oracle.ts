@@ -88,7 +88,7 @@ export function rejectCopiedBody(additions: string[], upstreamSources: string[],
 
 export function rejectCopiedScenarioAdapter(pristine: string, adapterRoot = join(import.meta.dir, "..", "adapter")): void {
   const sources = readdirSync(join(pristine, "src")).filter(name => name.endsWith(".c")).map(name => readFileSync(join(pristine, "src", name), "utf8"));
-  for (const name of ["scenario.c", "mover_sample.h"]) {
+  for (const name of ["scenario.c", "mover_sample.h", "toi.c"]) {
     rejectCopiedBody([readFileSync(join(adapterRoot, name), "utf8")], sources, 32);
   }
 }
@@ -1106,6 +1106,7 @@ function generateTOIBundle(workspace: string, sha: string, output: string): Reco
   const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
   const remote = join(cache, "official.git"); verifyReachable(OFFICIAL_SOURCE_URL, sha, remote);
   const source = materializePristine(remote, sha), pristine = verifyPristine(source, sha);
+  rejectCopiedScenarioAdapter(source);
   const build = join(cache, "toi-builds", sha);
   rmSync(build, { recursive: true, force: true });
   const evidence = buildPublic(source, build);
