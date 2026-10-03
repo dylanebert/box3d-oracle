@@ -1100,6 +1100,35 @@ function generateMoverBundle(workspace: string, sha: string, output: string): Re
   writeFileSync(join(output, "manifest.json"), canonicalJson(manifest)); verifyPristine(official, sha); return manifest;
 }
 
+function generateTOIBundle(workspace: string, sha: string, output: string): Record<string, unknown> {
+  requireFullSha(sha); ensureEmptyDirectory(output);
+  const member = join(import.meta.dir, "..");
+  const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
+  const remote = join(cache, "official.git"); verifyReachable(OFFICIAL_SOURCE_URL, sha, remote);
+  const source = materializePristine(remote, sha), pristine = verifyPristine(source, sha);
+  const build = join(cache, "toi-builds", sha);
+  rmSync(build, { recursive: true, force: true });
+  const evidence = buildPublic(source, build);
+  const object = join(build, "toi.o"), depfile = join(build, "toi.d");
+  checked(compiler(), ["-std=c11", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off", "-MMD", "-MF", depfile, "-I", join(member, "include"), "-I", join(source, "include"), "-c", join(member, "adapter", "toi.c"), "-o", object]);
+  if (readFileSync(depfile, "utf8").includes(`${source}/src/`)) throw new OracleError("TOI adapter includes private source");
+  const executable = join(build, "box3d-toi-adapter");
+  checked(compiler(), [object, join(build, "public-adapter", "writer.o"), join(build, "src", "libbox3d.a"), "-lm", "-o", executable]);
+  const casesPath = join(output, "cases.json"); checked(executable, [casesPath]);
+  const corpus = JSON.parse(readFileSync(casesPath, "utf8")) as { schema: string; cases: Array<{ id: string; family: string; symbol: string }> };
+  const roster = ["quad_seg_translate", "box_box_rotate", "box_box_separated", "box_box_overlap"].map(name => `toi.${name}.v1`);
+  if (corpus.schema !== "box3d-oracle/v8" || JSON.stringify(corpus.cases.map(c => c.id)) !== JSON.stringify(roster) || corpus.cases.some(c => c.family !== "toi" || c.symbol !== "b3TimeOfImpact")) throw new OracleError("TOI corpus roster mismatch");
+  const files: BundleFile[] = [
+    { name: "schema.json", data: readFileSync(join(member, "schema", "v8.json"), "utf8") },
+    { name: "cases.json", data: canonicalJson(corpus) },
+    { name: "membership.json", data: canonicalJson({ schema: "box3d-oracle/v8", caseCount: 4, roster }) },
+    { name: "provenance.json", data: canonicalJson({ adapter: "adapter/toi.c", adapterSha256: sha256File(join(member, "adapter", "toi.c")), executableSha256: sha256File(executable), compiler: evidence.compiler, cmake: evidence.cmake.map(value => value === source ? "<official-source>" : value === build ? "<toi-build>" : value), privateIncludeFirewall: "depfiles and negative private include mutation" }) },
+  ];
+  writeBundleFiles(output, files);
+  const manifest = { schema: "box3d-oracle/manifest-v8", bundle: { upstreamSha: sha, schema: "v8", identity: `${sha}/v8` }, upstream: { url: OFFICIAL_SOURCE_URL, ref: OFFICIAL_SOURCE_REF, sha, tree: pristine.tree }, oracle: { memberCommit: checked("git", ["rev-parse", "HEAD"], member).stdout.trim(), generatorSha256: sha256File(join(import.meta.dir, "oracle.ts")) }, caseCount: 4, fileDigests: Object.fromEntries(files.map(f => [f.name, sha256File(join(output, f.name))])), generation: { readsShallot: false, readsGolds: false, outputArithmetic: false } };
+  writeFileSync(join(output, "manifest.json"), canonicalJson(manifest)); verifyPristine(source, sha); return manifest;
+}
+
 function sentinelTestMover(workspace: string, sha: string): void {
   const baseline = mkdtempSync(join(tmpdir(), "mover-sentinel-base-"));
   const mutation = mkdtempSync(join(tmpdir(), "mover-sentinel-mutated-"));
@@ -1178,11 +1207,11 @@ function reproduce(workspace: string, bundle: string): void {
   const manifest = JSON.parse(readFileSync(join(bundleRoot, "manifest.json"), "utf8")) as { bundle?: { upstreamSha?: string; schema?: string } };
   const sha = manifest.bundle?.upstreamSha;
   const schema = manifest.bundle?.schema;
-  if (!sha || (schema !== "v1" && schema !== "v2" && schema !== "v3" && schema !== "v6" && schema !== "v7")) throw new OracleError("bundle manifest does not identify schema v1, v2, v3, v6, or v7 and a full upstream SHA");
+  if (!sha || (schema !== "v1" && schema !== "v2" && schema !== "v3" && schema !== "v6" && schema !== "v7" && schema !== "v8")) throw new OracleError("bundle manifest does not identify schema v1, v2, v3, v6, v7, or v8 and a full upstream SHA");
   const first = mkdtempSync(join(tmpdir(), "box3d-oracle-reproduce-a-"));
   const second = mkdtempSync(join(tmpdir(), "box3d-oracle-reproduce-b-"));
   try {
-    const generate = schema === "v7" ? generateMoverBundle : schema === "v6" ? generateBundleV6 : schema === "v3" ? generateBundleV3 : schema === "v2" ? generateBundleV2 : generateBundle;
+    const generate = schema === "v8" ? generateTOIBundle : schema === "v7" ? generateMoverBundle : schema === "v6" ? generateBundleV6 : schema === "v3" ? generateBundleV3 : schema === "v2" ? generateBundleV2 : generateBundle;
     generate(workspace, sha, first);
     generate(workspace, sha, second);
     compareTrees(first, second);
@@ -1239,7 +1268,7 @@ if (import.meta.main) {
       console.log(`sentinel-test: PASS ${args.sha}`);
     } else if (args.command === "generate") {
       if (!args.sha || !args.output) throw new OracleError("generate requires --sha and --output");
-      const result = args.schema === "v7" ? generateMoverBundle(args.workspace, args.sha, resolve(args.output)) : args.schema === "v6" ? generateBundleV6(args.workspace, args.sha, resolve(args.output)) : args.schema === "v3" ? generateBundleV3(args.workspace, args.sha, resolve(args.output)) : args.schema === "v2" ? generateBundleV2(args.workspace, args.sha, resolve(args.output)) : generateBundle(args.workspace, args.sha, resolve(args.output));
+      const result = args.schema === "v8" ? generateTOIBundle(args.workspace, args.sha, resolve(args.output)) : args.schema === "v7" ? generateMoverBundle(args.workspace, args.sha, resolve(args.output)) : args.schema === "v6" ? generateBundleV6(args.workspace, args.sha, resolve(args.output)) : args.schema === "v3" ? generateBundleV3(args.workspace, args.sha, resolve(args.output)) : args.schema === "v2" ? generateBundleV2(args.workspace, args.sha, resolve(args.output)) : generateBundle(args.workspace, args.sha, resolve(args.output));
       console.log(`generate: PASS ${String((result.bundle as { identity: string }).identity)}`);
     } else {
       if (!args.bundle) throw new OracleError("reproduce requires --bundle");

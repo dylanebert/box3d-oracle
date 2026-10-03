@@ -43,6 +43,10 @@ bun projects/box3d-oracle/bin/oracle.ts generate \\
 
 The lane records position, velocity, pogo velocity, ground flag, final plane count and summed applied linear impulse for each dynamic body as f32 hexadecimal bits. Ground flag and plane count use f32 encodings of their numeric values. Pass count and plane-solver iteration count are additional integer diagnostics. `sentinel-test --schema v7` changes the loop bound from five passes to one and requires the wall's position or velocity vectors to change. `reproduce` supports this lane's byte-equality check.
 
+## Time-of-Impact Lane
+
+`generate --schema v8` records four convex sweep inputs through public `b3TimeOfImpact`: translation, rotation, separation and initial overlap. `adapter/toi.c` emits the supplied point clouds, radii, sweeps and maximum fraction alongside the result. State and iteration counts use signed i32 hexadecimal encodings; the remaining outputs use f32 bits. The lane is independent of v1–v7, uses the pristine pinned source and the public include firewall, and supports byte-identical `reproduce`.
+
 ## Local Checks
 
 ```sh
