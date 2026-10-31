@@ -121,6 +121,12 @@ test("marker patch verifier rejects an outside-marker edit", () => {
   expect(() => verifyPatchSet(original, patched, [fixture])).toThrow(/outside named/);
 });
 
+test("marker patch takes the one spelling its revision carries and rejects two", () => {
+  const fixture = PATCHES.find((patch) => patch.alternatives?.length)!;
+  for (const site of [fixture, ...fixture.alternatives!]) expect(() => verifyPatchSet(site.anchor, site.addition, [fixture])).not.toThrow();
+  expect(() => verifyPatchSet(fixture.anchor + fixture.alternatives![0].anchor, fixture.addition + fixture.alternatives![0].anchor, [fixture])).toThrow(/requires one anchor, found 2/);
+});
+
 test("token detector rejects a substantive copied upstream body fixture", () => {
   const body = "static void copied(void) { int i = 0; i += 1; i += 2; i += 3; i += 4; i += 5; i += 6; i += 7; i += 8; i += 9; return; }";
   expect(() => rejectCopiedBody([body], [body])).toThrow(/copied upstream/);

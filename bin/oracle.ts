@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { DECLARED_SYMBOLS, O4_DECLARED_SYMBOLS, PATCHES, type OraclePatch } from "../hooks/patches";
+import { DECLARED_SYMBOLS, O4_DECLARED_SYMBOLS, PATCHES, type OraclePatch, type OracleSite } from "../hooks/patches";
 import { ALL_SUITE_FILES, O6A_SUITE_FILES, O6B_SUITE_FILES, classifyInventory, diffInventories, extractInventoryFromSources, joinInventoryCoverage, mergeCoverage, mergeInventories, type Coverage, type Inventory } from "./inventory";
 
 export const OFFICIAL_SOURCE_URL = "https://github.com/erincatto/box3d.git";
@@ -52,10 +52,16 @@ function requireFullSha(sha: string): void {
   if (!FULL_SHA.test(sha)) throw new OracleError(`--sha must be a 40-character lowercase full commit SHA: ${sha}`);
 }
 
-function applyPatch(text: string, patch: OraclePatch): string {
-  const occurrences = text.split(patch.anchor).length - 1;
+function patchSite(text: string, patch: OraclePatch): OracleSite {
+  const found = [patch, ...(patch.alternatives ?? [])].map((site) => ({ site, occurrences: text.split(site.anchor).length - 1 })).filter(({ occurrences }) => occurrences > 0);
+  const occurrences = found.reduce((sum, item) => sum + item.occurrences, 0);
   if (occurrences !== 1) throw new OracleError(`patch ${patch.marker} requires one anchor, found ${occurrences}`);
-  return text.replace(patch.anchor, patch.addition);
+  return found[0].site;
+}
+
+function applyPatch(text: string, patch: OraclePatch): string {
+  const site = patchSite(text, patch);
+  return text.replace(site.anchor, site.addition);
 }
 
 export function verifyPatchSet(original: string, patched: string, patches: OraclePatch[]): void {
@@ -109,8 +115,9 @@ function patchOfficialSource(pristine: string, patched: string): { digest: strin
     const original = readFileSync(originalPath, "utf8");
     let text = original;
     for (const patch of patches) {
-      text = applyPatch(text, patch);
-      additions.push(`${patch.marker}\n${patch.addition.slice(patch.anchor.length)}`);
+      const site = patchSite(text, patch);
+      text = text.replace(site.anchor, site.addition);
+      additions.push(`${patch.marker}\n${site.addition.slice(site.anchor.length)}`);
     }
     writeFileSync(patchedPath, text);
     verifyPatchSet(original, text, patches);

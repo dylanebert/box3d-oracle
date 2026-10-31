@@ -1,9 +1,24 @@
-export type OraclePatch = {
-  file: string;
-  marker: string;
+export type OracleSite = {
   anchor: string;
   addition: string;
 };
+
+/** One marker at one site. `alternatives` spell the same site as other upstream revisions write it; exactly one of the anchors may occur, once. */
+export type OraclePatch = OracleSite & {
+  file: string;
+  marker: string;
+  alternatives?: OracleSite[];
+};
+
+const visitConvexManifold = "#ifdef B3_ORACLE_SENTINELS\n\t++b3OracleO4ConvexManifoldVisits;\n#endif\n";
+
+/** The hull manifold body: the live SIMD definition through 79fc559, the single definition at 51f056e, and b3CollideHullsAtWidth from e77352c, which b3CollideHulls and world contacts call. */
+function convexManifoldVisit(): OraclePatch {
+  const opening = "void b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* hullA, const b3HullData* hullB,\n\t\t\t\t\t b3Transform transformBtoA, b3SATCache* cache )\n{\n";
+  const atWidth = "void b3CollideHullsAtWidth( b3LocalManifold* manifold, int capacity, const b3HullData* hullA, const b3HullData* hullB,\n\t\t\t\t\t\t\tb3Transform transformBtoA, b3SATCache* cache, int simdWidth )\n{\n";
+  const site = (prefix: string): OracleSite => ({ anchor: `${prefix}\tmanifold->pointCount = 0;\n`, addition: `${prefix}${visitConvexManifold}\tmanifold->pointCount = 0;\n` });
+  return { file: "src/convex_manifold.c", marker: "o4.convex-manifold.visit", ...site(atWidth), alternatives: [site(`#if B3_SIMD_COLLIDE_HULLS == 1\n\n${opening}`), site(`#undef NV\n\n${opening}`)] };
+}
 
 export const PATCHES: OraclePatch[] = [
   {
@@ -78,18 +93,7 @@ export const PATCHES: OraclePatch[] = [
     anchor: '#include "algorithm.h"\n',
     addition: '#include "algorithm.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\n#endif\n',
   },
-  {
-    file: "src/convex_manifold.c",
-    marker: "o4.convex-manifold.visit.simd",
-    anchor: "#if B3_SIMD_COLLIDE_HULLS == 1\n\nvoid b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* hullA, const b3HullData* hullB,\n\t\t\t\t\t b3Transform transformBtoA, b3SATCache* cache )\n{\n\tmanifold->pointCount = 0;\n",
-    addition: "#if B3_SIMD_COLLIDE_HULLS == 1\n\nvoid b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* hullA, const b3HullData* hullB,\n\t\t\t\t\t b3Transform transformBtoA, b3SATCache* cache )\n{\n#ifdef B3_ORACLE_SENTINELS\n\t++b3OracleO4ConvexManifoldVisits;\n#endif\n\tmanifold->pointCount = 0;\n",
-  },
-  {
-    file: "src/convex_manifold.c",
-    marker: "o4.convex-manifold.visit.scalar",
-    anchor: "\treturn (b3EdgeQuery){\n\t\t.normal = maxNormal,\n\t\t.separation = maxSeparation,\n\t\t.indexA = maxIndexA,\n\t\t.indexB = maxIndexB,\n\t};\n}\n\nvoid b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* hullA, const b3HullData* hullB,\n\t\t\t\t\t b3Transform transformBtoA, b3SATCache* cache )\n{\n\tmanifold->pointCount = 0;\n",
-    addition: "\treturn (b3EdgeQuery){\n\t\t.normal = maxNormal,\n\t\t.separation = maxSeparation,\n\t\t.indexA = maxIndexA,\n\t\t.indexB = maxIndexB,\n\t};\n}\n\nvoid b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* hullA, const b3HullData* hullB,\n\t\t\t\t\t b3Transform transformBtoA, b3SATCache* cache )\n{\n#ifdef B3_ORACLE_SENTINELS\n\t++b3OracleO4ConvexManifoldVisits;\n#endif\n\tmanifold->pointCount = 0;\n",
-  },
+  convexManifoldVisit(),
   {
     file: "src/mesh_contact.c",
     marker: "o4.mesh-contact.hooks",
@@ -99,8 +103,8 @@ export const PATCHES: OraclePatch[] = [
   {
     file: "src/mesh_contact.c",
     marker: "o4.mesh-contact.visit",
-    anchor: "b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB, bool isFast, b3Arena arena )\n{\n\tB3_ASSERT( shapeA->type == b3_meshShape || shapeA->type == b3_heightShape );\n",
-    addition: "b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB, bool isFast, b3Arena arena )\n{\n#ifdef B3_ORACLE_SENTINELS\n\t++b3OracleO4MeshContactVisits;\n#endif\n\tB3_ASSERT( shapeA->type == b3_meshShape || shapeA->type == b3_heightShape );\n",
+    anchor: "bool isFast, b3Arena arena )\n{\n\tB3_ASSERT( shapeA->type == b3_meshShape || shapeA->type == b3_heightShape );\n",
+    addition: "bool isFast, b3Arena arena )\n{\n#ifdef B3_ORACLE_SENTINELS\n\t++b3OracleO4MeshContactVisits;\n#endif\n\tB3_ASSERT( shapeA->type == b3_meshShape || shapeA->type == b3_heightShape );\n",
   },
   {
     file: "src/contact.c",
