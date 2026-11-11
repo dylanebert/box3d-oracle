@@ -505,8 +505,8 @@ export function unstableDecisions(baseline: Decision[], runs: Decision[][], k: n
  * (`quantities`), a vector by its change, a rotation by its rotation vector from the step's. */
 export interface Bounds { values: Map<string, Bound>; vectors: Map<string, Bound> }
 /** `kept` bounds each quantity over the runs whose discrete outcome equals the step's, `runsKept` of
- * them; `all` over every run. */
-export interface Spread { result: StepResult; kept: Bounds; all: Bounds; runsKept: number; discreteChanges: number; unstable: Unstable[]; unmatched: number }
+ * them; `all()` over every run, computed on demand. */
+export interface Spread { result: StepResult; kept: Bounds; all: () => Bounds; runsKept: number; discreteChanges: number; unstable: Unstable[]; unmatched: number }
 
 /** A rotation's change as a rotation vector, 2 vec(conj(b) a) on the shorter arc. */
 function rotationVector(a: readonly number[], b: readonly number[]): number[] {
@@ -554,17 +554,18 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
     const reader = child.stdout.getReader();
     const decoder = new TextDecoder();
     let buffered = "";
-    const pending: string[] = [];
+    let pending: string[] = [];
+    let cursor = 0;
     const line = async (): Promise<string> => {
-      while (pending.length === 0) {
+      while (cursor === pending.length) {
         const { value, done } = await reader.read();
         if (done) throw new Error(`step oracle exited (${await child.exited})`);
         buffered += decoder.decode(value, { stream: true });
-        const parts = buffered.split("\n");
-        buffered = parts.pop()!;
-        pending.push(...parts);
+        pending = buffered.split("\n");
+        buffered = pending.pop()!;
+        cursor = 0;
       }
-      const next = pending.shift()!;
+      const next = pending[cursor++];
       if (next.startsWith("error ")) throw new Error(`step oracle: ${next.slice(6)}`);
       return next;
     };
@@ -610,10 +611,12 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
     const env = (seed: number) => ["-e", `VFC_BACKENDS=${backend} --seed=${seed}`, "-e", `B3_ORACLE_SQRT=${rounding.sqrt === "random" ? `random:${seed}` : "nearest"}`, "-e", "VFC_BACKENDS_SILENT_LOAD=True", "-e", "VFC_BACKENDS_LOGGER=False"];
     return (stochastic = await Promise.all(Array.from({ length: MCA_LANES }, (_, k) => start(["docker", "run", "--rm", "-i", "--network=none", ...env(k + 1), tag, "box3d-step-oracle"]))));
   };
-  const run = (s: StepState, lane = main) => lane.exchange(encodeState(scene, s), async () => decodeResult(await lane.until("end")));
+  const send = (request: string, lane = main) => lane.exchange(request, async () => decodeResult(await lane.until("end")));
+  const run = (s: StepState, lane = main) => send(encodeState(scene, s), lane);
   const randomlyRounded = async (state: StepState) => {
     const all = await lanes();
-    return Promise.all(Array.from({ length: MCA_RUNS }, (_, r) => run(state, all[r % MCA_LANES])));
+    const request = encodeState(scene, state);
+    return Promise.all(Array.from({ length: MCA_RUNS }, (_, r) => send(request, all[r % MCA_LANES])));
   };
   return {
     mass,
@@ -649,7 +652,7 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
         return { values, vectors };
       };
       const { unstable, unmatched } = unstableDecisions(result.decisions, others.map((o) => o.decisions), k);
-      return { result, kept: bounds(kept), all: bounds(others), runsKept: kept.length, discreteChanges: others.length - kept.length, unstable, unmatched };
+      return { result, kept: bounds(kept), all: () => bounds(others), runsKept: kept.length, discreteChanges: others.length - kept.length, unstable, unmatched };
     },
     decide: (kind, operands, flip = false) =>
       exchange(`decide ${kind} ${kind === "separation" || kind === "rolling" ? vec(operands) : `${operands[0]} ${vec(operands.slice(1))}`} ${flip ? 1 : 0}\n`, async () => {
