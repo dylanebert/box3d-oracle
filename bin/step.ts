@@ -282,7 +282,8 @@ export function nextState(result: StepResult, applied: { force?: Vec3; torque?: 
 /** Backward error analysis (Higham): a backward-stable step is the exact step of an input perturbed by
  * about an ulp, so the spread a port may legitimately show is upstream's response to such inputs. The
  * spread runs upstream's step from the state with every continuous input scaled by 1 + u 2^-23, u
- * uniform in [-1, 1) and independent per value, in SPREAD_DIRECTIONS seeded directions fixed here. */
+ * uniform in [-1, 1) and independent per value, in SPREAD_DIRECTIONS seeded directions fixed here. Shape
+ * geometry is such an input too: each direction also runs on its own perturbScene. */
 export const SPREAD_DIRECTIONS = 8;
 export const SPREAD_SCALE = 2 ** -23;
 
@@ -309,6 +310,26 @@ export function perturb(state: StepState, seed: number): StepState {
     bodies: state.bodies.map((b) => ({ origin: v(b.origin) as Vec3, center: v(b.center) as Vec3, rotation: v(b.rotation) as Quat, linearVelocity: v(b.linearVelocity) as Vec3, angularVelocity: v(b.angularVelocity) as Vec3, force: v(b.force ?? [0, 0, 0]) as Vec3, torque: v(b.torque ?? [0, 0, 0]) as Vec3 })),
     joints: state.joints.map(v),
     contacts: state.contacts.map((c) => ({ ...c, points: c.points.map((q) => ({ featureId: q.featureId, normalImpulse: p(q.normalImpulse) })), frictionImpulse: v(c.frictionImpulse) as Vec3, twistImpulse: p(c.twistImpulse), rollingImpulse: v(c.rollingImpulse) as Vec3 })),
+  };
+}
+
+/** Scene geometry is as much an input as state (scene geometry rounds as state does), so each perturbed run
+ * also runs on a scene whose shapes' continuous geometry (capsule and sphere centers and radii, box half
+ * extents) is perturbed by the same 2^-23 relative amounts, drawn per seed from a stream independent of
+ * the state's. Kinds, bodies, materials, filters and everything discrete stay. */
+export function perturbScene(scene: StepScene, seed: number): StepScene {
+  const next = random(seed + 0x9e3779b9);
+  const p = (x: number) => Math.fround(x * (1 + (2 * next() - 1) * SPREAD_SCALE));
+  const v = (xs: Vec3) => xs.map(p) as Vec3;
+  return {
+    ...scene,
+    shapes: scene.shapes.map((s) =>
+      s.kind === "capsule"
+        ? { ...s, center1: v(s.center1), center2: v(s.center2), radius: p(s.radius) }
+        : s.kind === "sphere"
+          ? { ...s, center: v(s.center), radius: p(s.radius) }
+          : { ...s, halfExtents: v(s.halfExtents) },
+    ),
   };
 }
 
@@ -420,54 +441,68 @@ export interface StepOracle {
 /** Builds (once, cached) and starts the step lane for an official Box3D SHA with one scene. */
 export async function openStepOracle(sha: string, scene: StepScene): Promise<StepOracle> {
   const executable = buildStepOracle(sha);
-  const child = Bun.spawn([executable], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
-  const reader = child.stdout.getReader();
-  const decoder = new TextDecoder();
-  let buffered = "";
-  const pending: string[] = [];
-  const line = async (): Promise<string> => {
-    while (pending.length === 0) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error(`step oracle exited (${await child.exited})`);
-      buffered += decoder.decode(value, { stream: true });
-      const parts = buffered.split("\n");
-      buffered = parts.pop()!;
-      pending.push(...parts);
-    }
-    const next = pending.shift()!;
-    if (next.startsWith("error ")) throw new Error(`step oracle: ${next.slice(6)}`);
-    return next;
+  const start = async (built: StepScene) => {
+    const child = Bun.spawn([executable], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+    const reader = child.stdout.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    const pending: string[] = [];
+    const line = async (): Promise<string> => {
+      while (pending.length === 0) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error(`step oracle exited (${await child.exited})`);
+        buffered += decoder.decode(value, { stream: true });
+        const parts = buffered.split("\n");
+        buffered = parts.pop()!;
+        pending.push(...parts);
+      }
+      const next = pending.shift()!;
+      if (next.startsWith("error ")) throw new Error(`step oracle: ${next.slice(6)}`);
+      return next;
+    };
+    const until = async (end: string) => {
+      const lines: string[] = [];
+      for (let next = await line(); next !== end; next = await line()) lines.push(next);
+      return lines;
+    };
+    child.stdin.write(encodeScene(built));
+    child.stdin.flush();
+    const ready = await until("ready");
+    let queue: Promise<unknown> = Promise.resolve();
+    const exchange = <T>(request: string, read: () => Promise<T>): Promise<T> => {
+      const run = queue.then(async () => {
+        child.stdin.write(request);
+        child.stdin.flush();
+        return read();
+      });
+      queue = run.catch(() => undefined);
+      return run;
+    };
+    const close = () => {
+      child.stdin.end();
+      child.kill();
+    };
+    return { ready, until, exchange, close };
   };
-  const until = async (end: string) => {
-    const lines: string[] = [];
-    for (let next = await line(); next !== end; next = await line()) lines.push(next);
-    return lines;
-  };
-  child.stdin.write(encodeScene(scene));
-  child.stdin.flush();
-  const ready = await until("ready");
+  const main = await start(scene);
+  const { until, exchange } = main;
+  const ready = main.ready;
   const initial = decodeResult(ready.filter((text) => !text.startsWith("mass ")));
   const mass = ready.filter((text) => text.startsWith("mass ")).map((text) => {
     const words = text.split(" ").slice(1).map(unf);
     const v = (k: number): Vec3 => [words[k], words[k + 1], words[k + 2]];
     return { invMass: words[0], localCenter: v(1), invInertiaLocal: [v(4), v(7), v(10)] as [Vec3, Vec3, Vec3] };
   });
-  let queue: Promise<unknown> = Promise.resolve();
-  const exchange = <T>(request: string, read: () => Promise<T>): Promise<T> => {
-    const run = queue.then(async () => {
-      child.stdin.write(request);
-      child.stdin.flush();
-      return read();
-    });
-    queue = run.catch(() => undefined);
-    return run;
-  };
+  // One lane per perturbed direction, each on its own perturbed scene, started at the first spread.
+  let perturbed: Awaited<ReturnType<typeof start>>[] | undefined;
+  const lanes = async () => (perturbed ??= await Promise.all(Array.from({ length: SPREAD_DIRECTIONS }, (_, k) => start(perturbScene(scene, k + 1)))));
   return {
     mass,
     initial,
     step: (state) => exchange(encodeState(scene, state), async () => decodeResult(await until("end"))),
     async stepWithSpread(state) {
-      const run = (s: StepState) => exchange(encodeState(scene, s), async () => decodeResult(await until("end")));
+      const run = (s: StepState, lane = main) => lane.exchange(encodeState(scene, s), async () => decodeResult(await lane.until("end")));
+      const others = await lanes();
       const result = await run(state);
       const base = continuousValues(result);
       const spread = new Map<string, number>();
@@ -475,7 +510,7 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
       const runs: Decision[][] = [];
       let discreteChanges = 0;
       for (let seed = 1; seed <= SPREAD_DIRECTIONS; seed++) {
-        const other = await run(perturb(state, seed));
+        const other = await run(perturb(state, seed), others[seed - 1]);
         runs.push(other.decisions);
         for (const [key, x] of continuousValues(other)) {
           const b = base.get(key);
@@ -513,8 +548,8 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
         return results;
       }),
     close() {
-      child.stdin.end();
-      child.kill();
+      main.close();
+      for (const lane of perturbed ?? []) lane.close();
     },
   };
 }

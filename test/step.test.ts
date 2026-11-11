@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { entityOf, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, perturb, SPREAD_SCALE, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
+import { entityOf, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, perturb, perturbScene, SPREAD_SCALE, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
 
 // The pinned official Box3D the step lane is held at; building it fetches official main once into the cache.
 const SHA = "336263320469e5e9febfe18697ab562488f7e97a";
@@ -256,6 +256,33 @@ test("a spread perturbs every continuous input by at most 2^-23 and measures ups
   for (const [key, value] of spread) expect(spreadAll.get(key)!).toBeGreaterThanOrEqual(value);
   expect(spread.get("bodies.0.center.1")).toBe(0);
   expect(Math.max(...[0, 1, 2].map((k) => spread.get(`bodies.3.linearVelocity.${k}`)!))).toBeGreaterThan(0);
+}, 60_000);
+
+test("a spread's runs also perturb every shape's continuous geometry by at most 2^-23, nothing discrete", async () => {
+  const a = perturbScene(scene, 3), b = perturbScene(scene, 3), c = perturbScene(scene, 4);
+  expect(a).toEqual(b);
+  expect(a).not.toEqual(c);
+  const geometry = (x: StepScene) => x.shapes.flatMap((s) => (s.kind === "capsule" ? [...s.center1, ...s.center2, s.radius] : s.kind === "sphere" ? [...s.center, s.radius] : [...s.halfExtents]));
+  const before = geometry(scene), after = geometry(a);
+  expect(after.every((x, i) => Math.abs(x - before[i]) <= 2 * SPREAD_SCALE * Math.abs(before[i]))).toBe(true);
+  expect(after.some((x, i) => x !== before[i])).toBe(true);
+  const rest = (x: StepScene) => ({ ...x, shapes: x.shapes.map(({ body, kind, density, friction, restitution, rollingResistance }) => ({ body, kind, density, friction, restitution, rollingResistance })) });
+  expect(rest(a)).toEqual(rest(scene));
+  // The state's and the geometry's draws are independent: the first geometry value is not scaled as
+  // the first state value of the same seed.
+  const state = nextState(native[120]);
+  const scaleState = perturb(state, 3).bodies[0].origin[1] / state.bodies[0].origin[1];
+  const scaleGeometry = (a.shapes[0] as { halfExtents: number[] }).halfExtents[0] / 20;
+  expect(scaleState).not.toBe(scaleGeometry);
+  // A dynamic body's response to geometry alone: the same state on a perturbed scene moves it.
+  const lane = await openStepOracle(SHA, a);
+  try {
+    const moved = await lane.step(state);
+    const base = await oracle.step(state);
+    expect(moved.bodies.some((x, i) => x.linearVelocity.some((v, k) => v !== base.bodies[i].linearVelocity[k]))).toBe(true);
+  } finally {
+    lane.close();
+  }
 }, 60_000);
 
 // Sentinel: every hooked decision reports its closest approach, a decision is unstable when ten times
