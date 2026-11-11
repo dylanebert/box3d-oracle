@@ -88,6 +88,12 @@ export const PATCHES: OraclePatch[] = [
     addition: "#ifdef B3_ORACLE_HOOKS\nvoid b3OracleResetRecycleVisits( void )\n{\n\tb3OracleRecycleVisits = 0;\n}\n#endif\n\nstatic void b3AddNonTouchingContact( b3World* world, b3Contact* contact )\n",
   },
   {
+    file: "src/physics_world.c",
+    marker: "physics.remove-non-touching.bridge",
+    anchor: "// Narrow-phase collision\nstatic void b3Collide( b3StepContext* context )\n",
+    addition: "#ifdef B3_ORACLE_HOOKS\nvoid b3OracleRemoveNonTouchingContact( b3World* world, int setIndex, int localIndex )\n{\n\tb3RemoveNonTouchingContact( world, setIndex, localIndex );\n}\n#endif\n\n// Narrow-phase collision\nstatic void b3Collide( b3StepContext* context )\n",
+  },
+  {
     file: "src/convex_manifold.c",
     marker: "o4.convex-manifold.hooks",
     anchor: '#include "algorithm.h"\n',

@@ -47,6 +47,14 @@ The lane records position, velocity, pogo velocity, ground flag, final plane cou
 
 `generate --schema v8` records four convex sweep inputs through public `b3TimeOfImpact`: translation, rotation, separation and initial overlap. `adapter/toi.c` emits the supplied point clouds, radii, sweeps and maximum fraction alongside the result. State and iteration counts use signed i32 hexadecimal encodings; the remaining outputs use f32 bits. The lane is independent of v1–v7, uses the pristine pinned source and the public include firewall, and supports byte-identical `reproduce`.
 
+## Step Lane
+
+`bin/step.ts` holds a port to one upstream `b3World_Step` from a state it supplies, as MuJoCo Warp's tests call each stage from one shared `mjData` against C MuJoCo. `openStepOracle(sha, scene)` builds `adapter/step.c` against the disposable patched checkout once per SHA and adapter digest (`step-build --sha <sha>` prints the cached executable) and starts it with a scene: world settings, then bodies, capsule, sphere and box shapes, and revolute, spherical, prismatic and filter joints in creation order, so their indices are Box3D's ids and joint colors are those Box3D assigns at creation. Each `step(state)` rebuilds that world, loads the state into upstream structs, steps once and returns the state after it.
+
+The state is what a step reads: each body's center of mass, rotation, velocities and applied force and torque; each joint's warm-start impulses (`JOINT_IMPULSES`); every shape's fat AABB; the contact id pool; and the contact set by id, each contact's shape pair, touching flag, graph color, manifold point feature ids and normal impulses, and friction, twist and rolling impulses. Touching contacts enter the graph through `b3LinkContact`, `b3AddContactToGraph` with the colors its search visits first occupied, and the `b3OracleRemoveNonTouchingContact` bridge, as `b3Collide` adds a contact that starts touching. A freshly built world marks every proxy moved, so the step creates a contact for every overlapping fat pair that lacks one. The world runs without sleep, continuous collision and contact recycling, whose state (sleep times and islands, sweeps, cached relative poses) the lane does not carry; convex caches are not carried either, which is exact for sphere, capsule and box-against-round shapes and does not cover hull against hull.
+
+`test/step.test.ts` holds the load complete and live: a chain of loaded steps equals an uninterrupted upstream rollout bit for bit over 240 steps whose contacts begin, touch between dynamic and static bodies, stop and are destroyed with ids reused, and changing any loaded field changes what upstream computes from it.
+
 ## Local Checks
 
 ```sh
@@ -54,7 +62,7 @@ bun run check
 bun run test
 ```
 
-The tests create temporary fake Git remotes and cover an unreachable commit, a dirty/tree-mismatched checkout, a failing upstream test executable, outside-marker edits, copied-body fixtures, missing provenance, exact inventory joins, and synthetic inventory additions/removals. `sentinel-test --schema v3` mutates every O4 family hook, including each public joint producer, and requires the corresponding output vector to change.
+`test/step.test.ts` builds the step lane at the pinned official SHA, fetching official `main` into the cache on its first run. The other tests create temporary fake Git remotes and cover an unreachable commit, a dirty/tree-mismatched checkout, a failing upstream test executable, outside-marker edits, copied-body fixtures, missing provenance, exact inventory joins, and synthetic inventory additions/removals. `sentinel-test --schema v3` mutates every O4 family hook, including each public joint producer, and requires the corresponding output vector to change.
 
 Extract the cumulative official test inventory and exact coverage join from an empty official checkout:
 

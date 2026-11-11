@@ -13,6 +13,7 @@ void b3OracleCallIntegrateVelocities( b3World* world, float h );
 void b3OracleCallIntegratePositions( b3World* world, float h, b3Vec3* deltaPosition, b3Quat* deltaRotation );
 void b3OracleCallFinalize( b3World* world, float dt );
 void b3OracleResetRecycleVisits( void );
+void b3OracleRemoveNonTouchingContact( b3World* world, int setIndex, int localIndex );
 extern uint32_t b3OracleRecycleVisits;
 extern uint32_t b3OracleO4ConvexManifoldVisits;
 extern uint32_t b3OracleO4MeshContactVisits;

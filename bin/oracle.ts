@@ -94,7 +94,7 @@ export function rejectCopiedBody(additions: string[], upstreamSources: string[],
 
 export function rejectCopiedScenarioAdapter(pristine: string, adapterRoot = join(import.meta.dir, "..", "adapter")): void {
   const sources = readdirSync(join(pristine, "src")).filter(name => name.endsWith(".c")).map(name => readFileSync(join(pristine, "src", name), "utf8"));
-  for (const name of ["scenario.c", "mover_sample.h", "toi.c"]) {
+  for (const name of ["scenario.c", "mover_sample.h", "toi.c", "step.c"]) {
     rejectCopiedBody([readFileSync(join(adapterRoot, name), "utf8")], sources, 32);
   }
 }
@@ -129,7 +129,7 @@ function patchOfficialSource(pristine: string, patched: string): { digest: strin
   return { digest: hookDigest() };
 }
 
-export function verifyDeclaredSymbols(source: string, nmEvidence: string, declarations = DECLARED_SYMBOLS): void {
+export function verifyDeclaredSymbols(source: string, nmEvidence: string, declarations: readonly { symbol: string; file: string }[] = DECLARED_SYMBOLS): void {
   for (const declared of declarations) {
     if (!readFileSync(join(source, declared.file), "utf8").includes(declared.symbol)) throw new OracleError(`declared upstream symbol is missing from source: ${declared.symbol}`);
     if (!nmEvidence.includes(declared.symbol)) throw new OracleError(`declared upstream symbol is missing from nm/link evidence: ${declared.symbol}`);
@@ -459,6 +459,41 @@ function buildScenario(patched: string, build: string, table: string): { executa
   const executable = join(adapterBuild, "box3d-scenario-adapter");
   checked(compiler(), [object, join(build, "src", "libbox3d.a"), "-lm", "-o", executable]);
   return { executable, hookDigest: hookDigest(), cmake: cmake.map((value) => value === patched ? "<patched-official-source>" : value === build ? "<scenario-build>" : value) };
+}
+
+/** The step lane's executable for an official SHA, built once per SHA and adapter/hook digest under the cache. */
+export function buildStepOracle(sha: string): string {
+  requireFullSha(sha);
+  const member = join(import.meta.dir, "..");
+  const cmake = ["-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "-DBOX3D_SAMPLES=OFF", "-DBOX3D_BENCHMARKS=OFF", "-DBOX3D_DOCS=OFF", "-DBOX3D_UNIT_TESTS=OFF", "-DBOX3D_VALIDATE=ON", "-DCMAKE_C_FLAGS=-DB3_ORACLE_HOOKS"];
+  // NDEBUG as the Release library is built, whose asserts reference no b3InternalAssert.
+  const cflags = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-DB3_ORACLE_HOOKS", "-DNDEBUG"];
+  const adapter = join(member, "adapter", "step.c");
+  const key = digest([sha, hookDigest(), readFileSync(adapter, "utf8"), ...cmake, ...cflags].join("\n")).slice(0, 16);
+  const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
+  const executable = join(cache, "step-builds", `${sha}-${key}`, "box3d-step-oracle");
+  if (existsSync(executable)) return executable;
+  const remote = join(cache, "official.git");
+  verifyReachable(OFFICIAL_SOURCE_URL, sha, remote);
+  const official = materializePristine(remote, sha);
+  verifyPristine(official, sha);
+  const patched = join(cache, "checkouts", `${sha}-step-patched`);
+  rmSync(patched, { recursive: true, force: true });
+  patchOfficialSource(official, patched);
+  const build = join(cache, "step-builds", `${sha}-${key}-work`);
+  rmSync(build, { recursive: true, force: true });
+  const generator = cmakeGenerator();
+  checked("cmake", ["-S", patched, "-B", build, ...(generator ? ["-G", generator] : []), ...cmake]);
+  checked("cmake", ["--build", build, "--target", "box3d"]);
+  const object = join(build, "step.o");
+  checked(compiler(), [...cflags, "-I", join(patched, "include"), "-I", join(patched, "src"), "-c", adapter, "-o", object]);
+  const staged = join(build, "box3d-step-oracle");
+  checked(compiler(), [object, join(build, "src", "libbox3d.a"), "-lm", "-o", staged]);
+  verifyPristine(official, sha);
+  mkdirSync(dirname(executable), { recursive: true });
+  checked("cp", [staged, executable]);
+  rmSync(build, { recursive: true, force: true });
+  return executable;
 }
 
 function canonicalJson(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n`; }
@@ -1231,7 +1266,7 @@ function reproduce(workspace: string, bundle: string): void {
 }
 function parseArgs(args: string[]): { command: string; workspace: string; sha?: string; legacySha?: string; output?: string; coverage?: string; diff?: string; bundle?: string; schema?: string; family?: string; half?: "o6a" | "o6b" | "current" } {
   const name = args[0];
-  if (!name || !["upstream-test", "generate", "reproduce", "sentinel-test", "scenario-migrate", "inventory"].includes(name)) throw new OracleError("usage: oracle.ts upstream-test|generate|reproduce|sentinel-test|scenario-migrate|inventory ...");
+  if (!name || !["upstream-test", "generate", "reproduce", "sentinel-test", "scenario-migrate", "inventory", "step-build"].includes(name)) throw new OracleError("usage: oracle.ts upstream-test|generate|reproduce|sentinel-test|scenario-migrate|inventory|step-build ...");
   const result: { command: string; workspace: string; sha?: string; legacySha?: string; output?: string; coverage?: string; diff?: string; bundle?: string; schema?: string; family?: string; half?: "o6a" | "o6b" | "current" } = { command: name, workspace: "" };
   for (let index = 1; index < args.length; index += 1) {
     const flag = args[index]; const value = args[index + 1];
@@ -1251,14 +1286,17 @@ function parseArgs(args: string[]): { command: string; workspace: string; sha?: 
     }
     index += 1;
   }
-  if (!result.workspace) throw new OracleError("--workspace is required");
+  if (!result.workspace && name !== "step-build") throw new OracleError("--workspace is required");
   return result;
 }
 
 if (import.meta.main) {
   try {
     const args = parseArgs(process.argv.slice(2));
-    if (args.command === "inventory") {
+    if (args.command === "step-build") {
+      if (!args.sha) throw new OracleError("step-build requires --sha");
+      console.log(buildStepOracle(args.sha));
+    } else if (args.command === "inventory") {
       if (!args.sha || !args.output || !args.coverage) throw new OracleError("inventory requires --sha, --output, and --coverage");
       inventory(args.workspace, args.sha, args.output, args.coverage, args.diff, args.half);
     } else if (args.command === "scenario-migrate") {
