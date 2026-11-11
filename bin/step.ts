@@ -92,7 +92,15 @@ export interface StepState {
   contacts: StepContactState[];
   /** Contacts and joints that take the other side of their ill-conditioned decisions this step. */
   flip?: Entity[];
+  /** A stage hook: keep bodies' and joints' state after this stage of this substep (0-based) and
+   * graph color (omitted for any), returned as the result's `stage`. */
+  stop?: { substep: number; stage: SolverStage; color?: number };
 }
+
+/** b3SolverStageType's per-substep stages. */
+export const SOLVER_STAGES = { velocities: 3, warm: 4, solve: 5, positions: 6, relax: 7 } as const;
+export type SolverStage = keyof typeof SOLVER_STAGES;
+export interface StageBody { linearVelocity: Vec3; angularVelocity: Vec3; deltaPosition: Vec3; deltaRotation: Quat }
 
 export interface Entity { entity: "contact" | "joint"; id: number }
 /** The discrete tests the step lane bounds: b3SegmentDistance's parallel test, contact push's
@@ -124,6 +132,8 @@ export interface StepResult {
   illConditioned: IllConditioned[];
   /** Decisions within ten bounds of their threshold but outside one, for tests of the bounds. */
   near: IllConditioned[];
+  /** With `stop`: awake bodies' state (null for others) and joints' impulses after that stage. */
+  stage?: { bodies: (StageBody | null)[]; joints: number[][] };
 }
 export interface StepMass { invMass: number; localCenter: Vec3; invInertiaLocal: [Vec3, Vec3, Vec3] }
 
@@ -190,6 +200,7 @@ export function encodeState(scene: StepScene, state: StepState): string {
   }
   const flip = state.flip ?? [];
   lines.push(`flip ${flip.length} ${flip.map((e) => `${e.entity} ${e.id}`).join(" ")}`.trimEnd());
+  lines.push(state.stop ? `stop ${state.stop.substep} ${SOLVER_STAGES[state.stop.stage]} ${state.stop.color ?? -1}` : "stop -1 0 -1");
   lines.push("end");
   return `${lines.join("\n")}\n`;
 }
@@ -206,7 +217,12 @@ export function decodeResult(lines: string[]): StepResult {
     if (tag === "body") result.bodies.push({ origin: v3(), center: v3(), rotation: [num(), num(), num(), num()], linearVelocity: v3(), angularVelocity: v3() });
     else if (tag === "joint") { const color = int(); result.joints.push({ color, impulses: words.slice(1).map(unf) }); }
     else if (tag === "ill" || tag === "near") (tag === "ill" ? result.illConditioned : result.near).push({ kind: words[i++] as DecisionKind, id: int(), quantity: num(), bound: num(), side: int() === 1 });
-    else if (tag === "fat") result.fatAabbs.push({ lower: v3(), upper: v3() });
+    else if (tag === "stagebody" || tag === "stagejoint") {
+      result.stage ??= { bodies: [], joints: [] };
+      const index = int();
+      if (tag === "stagejoint") result.stage.joints[index] = words.slice(1).map(unf);
+      else result.stage.bodies[index] = words.length > 1 ? { linearVelocity: v3(), angularVelocity: v3(), deltaPosition: v3(), deltaRotation: [num(), num(), num(), num()] } : null;
+    } else if (tag === "fat") result.fatAabbs.push({ lower: v3(), upper: v3() });
     else if (tag === "pool") { const next = int(); const count = int(); result.pool = { next, free: words.slice(2, 2 + count).map(Number) }; }
     else if (tag === "contact") {
       const id = int(), shapeA = int(), shapeB = int(), touching = int() === 1, color = int();

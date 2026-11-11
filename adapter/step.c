@@ -1,6 +1,7 @@
 // Step oracle: loads the state one b3World_Step reads into upstream structs, steps once and
 // writes the state after it. Protocol: whitespace tokens on stdin and stdout, floats as eight
 // hexadecimal digits of their bits, "-" for an upstream default. See bin/step.ts.
+#define _POSIX_C_SOURCE 200809L
 #include <float.h>
 #include <math.h>
 
@@ -13,6 +14,7 @@
 #include "oracle_hooks.h"
 #include "physics_world.h"
 #include "shape.h"
+#include "solver.h"
 #include "solver_set.h"
 
 #include "box3d/box3d.h"
@@ -49,6 +51,7 @@ enum { JOINT_REVOLUTE, JOINT_SPHERICAL, JOINT_PRISMATIC, JOINT_FILTER };
 enum { SHAPE_CAPSULE, SHAPE_SPHERE, SHAPE_BOX };
 
 static Scene scene;
+static FILE* out;
 static uint64_t maxFrictionMaterial;
 static float maxFrictionAgainstMaterial(float frictionA, uint64_t materialA, float frictionB, uint64_t materialB)
 {
@@ -58,8 +61,8 @@ static char token[256];
 
 static void fail(const char* message)
 {
-	printf("error %s\n", message);
-	fflush(stdout);
+	fprintf(out, "error %s\n", message);
+	fflush(out);
 	exit(3);
 }
 
@@ -123,7 +126,7 @@ static void putFloat(float value)
 {
 	uint32_t bits;
 	memcpy(&bits, &value, sizeof(bits));
-	printf(" %08x", bits);
+	fprintf(out, " %08x", bits);
 }
 static void putVec3(b3Vec3 v) { putFloat(v.x); putFloat(v.y); putFloat(v.z); }
 static void putQuat(b3Quat q) { putVec3(q.v); putFloat(q.s); }
@@ -449,10 +452,10 @@ static void writeIll(void)
 	for (int k = 0; k < decisionCount; ++k)
 	{
 		Decision* d = decisions + k;
-		printf("%s %s %d", d->near ? "near" : "ill", kindNames[d->kind], d->id);
+		fprintf(out, "%s %s %d", d->near ? "near" : "ill", kindNames[d->kind], d->id);
 		putFloat(d->quantity);
 		putFloat(d->bound);
-		printf(" %d\n", d->side);
+		fprintf(out, " %d\n", d->side);
 	}
 	decisionCount = 0;
 }
@@ -497,11 +500,11 @@ static void writeMass(void)
 	for (int i = 0; i < scene.bodyCount; ++i)
 	{
 		b3BodySim* sim = b3GetBodySim(world, b3Array_Get(world->bodies, i));
-		printf("mass");
+		fprintf(out, "mass");
 		putFloat(sim->invMass);
 		putVec3(sim->localCenter);
 		putVec3(sim->invInertiaLocal.cx); putVec3(sim->invInertiaLocal.cy); putVec3(sim->invInertiaLocal.cz);
-		printf("\n");
+		fprintf(out, "\n");
 	}
 	b3DestroyWorld(worldId);
 }
@@ -562,7 +565,7 @@ static void putCache(const b3ContactCache* cache)
 {
 	uint32_t words[CACHE_WORDS];
 	memcpy(words, cache, sizeof(words));
-	for (int k = 0; k < CACHE_WORDS; ++k) printf(" %08x", words[k]);
+	for (int k = 0; k < CACHE_WORDS; ++k) fprintf(out, " %08x", words[k]);
 }
 
 static void writeResult(b3World* world)
@@ -572,50 +575,50 @@ static void writeResult(b3World* world)
 		b3Body* body = b3Array_Get(world->bodies, i);
 		b3BodySim* sim = b3GetBodySim(world, body);
 		b3BodyState* state = b3GetBodyState(world, body);
-		printf("body");
+		fprintf(out, "body");
 		putVec3((b3Vec3){ (float)sim->transform.p.x, (float)sim->transform.p.y, (float)sim->transform.p.z });
 		putVec3((b3Vec3){ (float)sim->center.x, (float)sim->center.y, (float)sim->center.z });
 		putQuat(sim->transform.q);
 		putVec3(state ? state->linearVelocity : b3Vec3_zero);
 		putVec3(state ? state->angularVelocity : b3Vec3_zero);
-		printf("\n");
+		fprintf(out, "\n");
 	}
 	for (int i = 0; i < scene.jointCount; ++i)
 	{
 		b3Joint* joint = b3Array_Get(world->joints, i);
 		float* fields[16];
 		int n = jointFloats(b3GetJointSim(world, joint), fields);
-		printf("joint %d", joint->colorIndex);
+		fprintf(out, "joint %d", joint->colorIndex);
 		for (int k = 0; k < n; ++k) putFloat(*fields[k]);
-		printf("\n");
+		fprintf(out, "\n");
 	}
 	for (int i = 0; i < scene.shapeCount; ++i)
 	{
-		printf("fat");
+		fprintf(out, "fat");
 		putVec3(world->fatAABBs.data[i].lowerBound);
 		putVec3(world->fatAABBs.data[i].upperBound);
-		printf("\n");
+		fprintf(out, "\n");
 	}
-	printf("pool %d %d", world->contactIdPool.nextIndex, world->contactIdPool.freeArray.count);
-	for (int k = 0; k < world->contactIdPool.freeArray.count; ++k) printf(" %d", world->contactIdPool.freeArray.data[k]);
-	printf("\n");
+	fprintf(out, "pool %d %d", world->contactIdPool.nextIndex, world->contactIdPool.freeArray.count);
+	for (int k = 0; k < world->contactIdPool.freeArray.count; ++k) fprintf(out, " %d", world->contactIdPool.freeArray.data[k]);
+	fprintf(out, "\n");
 	for (int i = 0; i < world->contacts.count; ++i)
 	{
 		b3Contact* contact = world->contacts.data + i;
 		if (contact->contactId != i) continue;
 		int touching = (contact->flags & b3_contactTouchingFlag) != 0;
-		printf("contact %d %d %d %d %d", i, contact->shapeIdA, contact->shapeIdB, touching, contact->colorIndex);
+		fprintf(out, "contact %d %d %d %d %d", i, contact->shapeIdA, contact->shapeIdB, touching, contact->colorIndex);
 		putCache(&contact->convexContact.cache);
-		printf(" %d", contact->manifoldCount);
+		fprintf(out, " %d", contact->manifoldCount);
 		for (int m = 0; m < contact->manifoldCount; ++m)
 		{
 			b3Manifold* manifold = contact->manifolds + m;
 			putVec3(manifold->normal);
-			printf(" %d", manifold->pointCount);
+			fprintf(out, " %d", manifold->pointCount);
 			for (int p = 0; p < manifold->pointCount; ++p)
 			{
 				b3ManifoldPoint* mp = manifold->points + p;
-				printf(" %u", mp->featureId);
+				fprintf(out, " %u", mp->featureId);
 				putVec3(mp->anchorA); putVec3(mp->anchorB);
 				putFloat(mp->separation); putFloat(mp->normalImpulse); putFloat(mp->totalNormalImpulse);
 			}
@@ -623,7 +626,7 @@ static void writeResult(b3World* world)
 			// Mixed materials are refreshed with every manifold and stale without one.
 			putFloat(contact->friction); putFloat(contact->restitution); putFloat(contact->rollingResistance);
 		}
-		printf("\n");
+		fprintf(out, "\n");
 	}
 }
 
@@ -668,6 +671,49 @@ static void addToColor(b3World* world, b3Contact* contact, int wanted)
 	if (contact->colorIndex != wanted) fail("loaded color already holds one of the contact's bodies");
 }
 
+// A stage hook to localize a red within a step: after stage `stopType` of color `stopColor` (-1 for
+// any) in substep `stopSubstep`, every body's velocities and substep deltas and every joint's
+// impulses are kept, and emitted with the step's result.
+static int stopSubstep = -1, stopType, stopColor, substep;
+static b3World* stageWorld;
+static char* stageLines;
+static size_t stageLength;
+static FILE* stageOut;
+
+static void stageHook(int type, int color, b3StepContext* context)
+{
+	if (type == b3_stageIntegrateVelocities) substep += 1;
+	if (stopSubstep < 0 || substep - 1 != stopSubstep || type != stopType || (stopColor >= 0 && color != stopColor)) return;
+	if (stageOut != NULL) fclose(stageOut);
+	stageOut = open_memstream(&stageLines, &stageLength);
+	FILE* saved = out;
+	out = stageOut;
+	for (int i = 0; i < scene.bodyCount; ++i)
+	{
+		b3Body* body = b3Array_Get(stageWorld->bodies, i);
+		fprintf(out, "stagebody %d", i);
+		if (body->setIndex == b3_awakeSet)
+		{
+			b3BodyState* state = context->states + body->localIndex;
+			putVec3(state->linearVelocity);
+			putVec3(state->angularVelocity);
+			putVec3(state->deltaPosition);
+			putQuat(state->deltaRotation);
+		}
+		fprintf(out, "\n");
+	}
+	for (int i = 0; i < scene.jointCount; ++i)
+	{
+		float* fields[16];
+		int n = jointFloats(b3GetJointSim(stageWorld, b3Array_Get(stageWorld->joints, i)), fields);
+		fprintf(out, "stagejoint %d", i);
+		for (int k = 0; k < n; ++k) putFloat(*fields[k]);
+		fprintf(out, "\n");
+	}
+	fflush(out);
+	out = saved;
+}
+
 // step
 // bodies: ox oy oz cx cy cz qx qy qz qw vx vy vz wx wy wz fx fy fz tx ty tz, per body
 // joints: the impulses of jointFloats, per joint
@@ -676,6 +722,7 @@ static void addToColor(b3World* world, b3Contact* contact, int wanted)
 // contacts count, then per contact: id shapeA shapeB touching color pointCount
 //   (featureId normalImpulse) per point, frictionImpulse(3) twistImpulse rollingImpulse(3) cache words
 // flip count (contact|joint id)... (entities that take the other side of their ill-conditioned decisions)
+// stop substep stageType color (substep -1 for none; see stageHook)
 static void loadAndStep(void)
 {
 	b3WorldId worldId = buildWorld();
@@ -804,16 +851,31 @@ static void loadAndStep(void)
 		if (joint) flipJoints[flipJointCount++] = id;
 		else flipContacts[flipContactCount++] = id;
 	}
+	expect("stop");
+	stopSubstep = readInt();
+	stopType = readInt();
+	stopColor = readInt();
 	expect("end");
 
 	decisionCount = 0;
+	substep = 0;
+	stageWorld = world;
 	b3World_Step(worldId, scene.timeStep, scene.subStepCount);
 	flipContactCount = flipJointCount = 0;
+	stopSubstep = -1;
+	if (stageOut != NULL)
+	{
+		fclose(stageOut);
+		stageOut = NULL;
+		fwrite(stageLines, 1, stageLength, out);
+		free(stageLines);
+		stageLines = NULL;
+	}
 	writeIll();
 
 	writeResult(world);
-	printf("end\n");
-	fflush(stdout);
+	fprintf(out, "end\n");
+	fflush(out);
 	b3DestroyWorld(worldId);
 }
 
@@ -828,9 +890,9 @@ static void rollout(void)
 		b3World_Step(worldId, scene.timeStep, scene.subStepCount);
 		writeIll();
 		writeResult(world);
-		printf("end\n");
+		fprintf(out, "end\n");
 	}
-	fflush(stdout);
+	fflush(out);
 	b3DestroyWorld(worldId);
 }
 
@@ -844,11 +906,11 @@ static void segment(void)
 	b3SegmentDistanceResult result = b3SegmentDistance(p1, q1, p2, q2);
 	flipContactCount = 0;
 	writeIll();
-	printf("segment");
+	fprintf(out, "segment");
 	putFloat(result.fraction1);
 	putFloat(result.fraction2);
-	printf("\nend\n");
-	fflush(stdout);
+	fprintf(out, "\nend\n");
+	fflush(out);
 }
 
 // decide kind operands... flip: one decision hook on supplied operands, for tests of its bound.
@@ -900,22 +962,24 @@ static void decideCommand(void)
 	else fail("decide kind is separation, limit or translation");
 	flipContactCount = flipJointCount = 0;
 	writeIll();
-	printf("decided");
+	fprintf(out, "decided");
 	putFloat(result);
-	printf("\nend\n");
-	fflush(stdout);
+	fprintf(out, "\nend\n");
+	fflush(out);
 }
 
 int main(void)
 {
+	out = stdout;
 	b3OracleSegmentDecision = segmentDecision;
 	b3OracleSeparationDecision = separationDecision;
 	b3OracleLimitDecision = limitDecision;
 	b3OracleTranslationDecision = translationDecision;
+	b3OracleStageHook = stageHook;
 	readScene();
 	writeMass();
-	printf("ready\n");
-	fflush(stdout);
+	fprintf(out, "ready\n");
+	fflush(out);
 	while (scanf("%255s", token) == 1)
 	{
 		if (strcmp(token, "step") == 0) loadAndStep();

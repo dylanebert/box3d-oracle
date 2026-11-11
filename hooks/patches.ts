@@ -113,7 +113,7 @@ export const PATCHES: OraclePatch[] = [
     file: "src/math_functions.c",
     marker: "math.segment-distance.hooks",
     anchor: '#include "math_internal.h"\n',
-    addition: '#include "math_internal.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\nb3OracleSegmentHook* b3OracleSegmentDecision = NULL;\nb3OracleSeparationHook* b3OracleSeparationDecision = NULL;\nb3OracleLimitHook* b3OracleLimitDecision = NULL;\nb3OracleTranslationHook* b3OracleTranslationDecision = NULL;\n#endif\n',
+    addition: '#include "math_internal.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\nb3OracleSegmentHook* b3OracleSegmentDecision = NULL;\nb3OracleSeparationHook* b3OracleSeparationDecision = NULL;\nb3OracleLimitHook* b3OracleLimitDecision = NULL;\nb3OracleTranslationHook* b3OracleTranslationDecision = NULL;\nb3OracleStage* b3OracleStageHook = NULL;\n#endif\n',
   },
   {
     file: "src/math_functions.c",
@@ -154,6 +154,13 @@ export const PATCHES: OraclePatch[] = [
     anchor: `\t\t\t${line}\n`,
     addition: `\t\t\t${line}\n${STEP}\t\t\tif ( b3OracleTranslationDecision != NULL )\n\t\t\t{\n\t\t\t\tC = b3OracleTranslationDecision( base->jointId, ${code}, useBias, C, ${limit}, stateA->deltaPosition, stateB->deltaPosition, joint->deltaCenter, rA, rB, joint->frameA.p, joint->frameB.p, stateA->deltaRotation, stateB->deltaRotation, joint->jointAxis, jointAxis, d );\n\t\t\t}\n#endif\n`,
   })) as OraclePatch[],
+  {
+    file: "src/solver.c",
+    marker: "step.solver.stage",
+    optional: true,
+    anchor: "\t\tb3AtomicStoreInt( &stage->completionCount, 0 );\n\t}\n",
+    addition: `\t\tb3AtomicStoreInt( &stage->completionCount, 0 );\n\t}\n${STEP}\tif ( b3OracleStageHook != NULL )\n\t{\n\t\tb3OracleStageHook( (int)stage->type, stage->colorIndex, context );\n\t}\n#endif\n`,
+  },
   {
     file: "src/convex_manifold.c",
     marker: "o4.convex-manifold.hooks",

@@ -221,3 +221,16 @@ test("flipping a contact's ill-conditioned separation changes upstream's step", 
   const flipped = await oracle.step({ ...state, flip: [{ entity: "contact", id: decision.id }] });
   expect(JSON.stringify(flipped.bodies)).not.toEqual(JSON.stringify(native[index].bodies));
 }, 60_000);
+
+// Sentinel: the stage hook keeps the state after the stage it names, within the step.
+test("a stop keeps bodies and joints after its stage", async () => {
+  const state = nextState(native[100]);
+  const atVelocities = await oracle.step({ ...state, stop: { substep: 0, stage: "velocities" } });
+  const atPositions = await oracle.step({ ...state, stop: { substep: 0, stage: "positions" } });
+  const full = await oracle.step(state);
+  expect(atVelocities.bodies).toEqual(full.bodies);
+  const moving = atPositions.stage!.bodies.findIndex((b) => b !== null && b.deltaPosition.some((x) => x !== 0));
+  expect(moving).toBeGreaterThan(0);
+  expect(atVelocities.stage!.bodies[moving]!.deltaPosition).toEqual([0, 0, 0]);
+  expect(atPositions.stage!.joints.length).toBe(scene.joints.length);
+}, 60_000);

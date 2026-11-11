@@ -42,6 +42,10 @@ typedef float b3OracleTranslationHook( int jointId, int limit, bool useBias, flo
 									   b3Vec3 deltaCenter, b3Vec3 rA, b3Vec3 rB, b3Vec3 frameA, b3Vec3 frameB, b3Quat dqA,
 									   b3Quat dqB, b3Vec3 localAxis, b3Vec3 axis, b3Vec3 d );
 extern b3OracleTranslationHook* b3OracleTranslationDecision;
+// After each solver stage the main thread executes, with its b3SolverStageType and graph color.
+typedef struct b3StepContext b3StepContext;
+typedef void b3OracleStage( int type, int color, b3StepContext* context );
+extern b3OracleStage* b3OracleStageHook;
 extern uint32_t b3OracleRecycleVisits;
 extern uint32_t b3OracleO4ConvexManifoldVisits;
 extern uint32_t b3OracleO4MeshContactVisits;
