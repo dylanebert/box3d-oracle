@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { entityOf, nextState, OVERFLOW_COLOR, openStepOracle, perturb, SPREAD_SCALE, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
+import { entityOf, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, perturb, SPREAD_SCALE, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
 
 // The pinned official Box3D the step lane is held at; building it fetches official main once into the cache.
 const SHA = "336263320469e5e9febfe18697ab562488f7e97a";
@@ -278,18 +278,34 @@ test("decisions unstable by their spread are reported and flip within their wind
   expect(checked).toBeGreaterThan(0);
 }, 120_000);
 
-// r-rl-humanoid-3's case: an entity's closest occurrence moves from A to B while every occurrence keeps
-// its side, which is no flip; an occurrence that crosses its threshold is one.
-test("a run takes a decision's other side only when one of its occurrences crosses", () => {
-  // Both occurrences within their local bound, so the entity is unstable either way.
-  const d = (ordinal: number, quantity: number, bound = 2e-8) => ({ kind: "rolling" as const, id: 7, ordinal, quantity, threshold: 0, bound });
-  const baseline = [d(0, -1e-8), d(1, 1.01e-8)];
-  const moved = unstableDecisions(baseline, [[d(0, -1.02e-8), d(1, 1.01e-8)]]);
-  expect(moved.map((u) => u.otherSideRuns)).toEqual([0]);
-  const crossed = unstableDecisions(baseline, [[d(0, 1e-9), d(1, 1.01e-8)]]);
-  expect(crossed.map((u) => [u.otherSideRuns, u.margin])).toEqual([[1, -1e-8]]);
-  // Outside its local bound an occurrence is unstable only by its own spread: 2e-12 here, not ten
-  // times enough, and the other occurrence's larger spread does not lend it one.
-  const tight = [d(0, -1e-8, 1e-12), d(1, 1e-3, 1e-12)];
-  expect(unstableDecisions(tight, [[d(0, -1.0002e-8, 1e-12), d(1, 1.001e-3, 1e-12)]])).toEqual([]);
+// r-rl-humanoid-3's cases. An entity's closest occurrence moves from A to B while every occurrence keeps
+// its side: no flip. A manifold that loses its second point in a run: its occurrences match by feature id,
+// not visit order, so nothing crosses and the lost ones are unmatched. An occurrence that crosses: a flip.
+test("a run takes a decision's other side only when a matched occurrence crosses", () => {
+  const d = (substep: number, point: number, quantity: number, bound = 2e-8) => ({ kind: "separation" as const, id: 7, substep, stage: 1, point, quantity, threshold: 0, bound });
+  const baseline = [d(1, 0, -1e-8), d(1, 65537, 1.01e-8)];
+  expect(unstableDecisions(baseline, [[d(1, 0, -1.02e-8), d(1, 65537, 1.01e-8)]]).unstable.map((u) => u.otherSideRuns)).toEqual([0]);
+  const crossed = unstableDecisions(baseline, [[d(1, 0, 1e-9), d(1, 65537, 1.01e-8)]]);
+  expect(crossed.unstable.map((u) => [u.otherSideRuns, u.margin])).toEqual([[1, -1e-8]]);
+  // The reviewer's probe: two points over four substeps, the run keeping only the first.
+  const two = [1, 2, 3, 4].flatMap((s) => [d(s, 0, -1e-8, 1e-12), d(s, 65537, 1e-8, 1e-12)]);
+  const one = [1, 2, 3, 4].map((s) => d(s, 0, -1e-8, 1e-12));
+  const lost = unstableDecisions(two, [one]);
+  expect(lost.unstable).toEqual([]);
+  expect(lost.unmatched).toBe(4);
+  // An occurrence is not made unstable by another's larger spread.
+  const tight = [d(1, 0, -1e-8, 1e-12), d(1, 65537, 1e-3, 1e-12)];
+  expect(unstableDecisions(tight, [[d(1, 0, -1.0002e-8, 1e-12), d(1, 65537, 1.001e-3, 1e-12)]]).unstable).toEqual([]);
 });
+
+test("occurrence keys are structural: unique in a step, and equal between a step and its rerun", async () => {
+  for (const k of [20, 100, 200]) {
+    const state = nextState(native[k]);
+    const a = await oracle.step(state), b = await oracle.step(state);
+    expect(a.decisions.length).toBeGreaterThan(0);
+    const keys = (r: StepResult) => r.decisions.map(occurrenceKey);
+    expect(new Set(keys(a)).size).toBe(keys(a).length);
+    expect(keys(b)).toEqual(keys(a));
+    expect(a.decisions.some((x) => x.point >= 0) && a.decisions.some((x) => x.substep > 0)).toBe(true);
+  }
+}, 60_000);

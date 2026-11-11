@@ -327,37 +327,26 @@ static double windowOf(const int* ids, const double* windows, int count, int id)
 		if (ids[k] == id) return windows[k];
 	return -1.0;
 }
-// Every occurrence of a hooked decision this step: its kind and entity, its ordinal among that
-// entity's occurrences of the kind (upstream visits them in a fixed order: substep, then iteration,
-// then manifold point), the deciding quantity, threshold and local bound, for a spread over runs.
+// Every occurrence of a hooked decision this step, keyed by its place in upstream's loop: kind and
+// entity, substep (0 before the solver's first), stage (0 collide, 1 the biased solve or push, 2 relax)
+// and manifold point by feature id (-1 where the decision is per contact or joint; a joint limit's side
+// is its kind). Each hook sets the stage and point before deciding.
 typedef struct Occurrence
 {
-	int kind, id, ordinal;
+	int kind, id, substep, stage;
+	uint32_t point;
 	float quantity, threshold, bound;
 } Occurrence;
 #define MAX_OCCURRENCES ( 64 * MAX_ITEMS )
 static Occurrence occurrences[MAX_OCCURRENCES];
 static int occurrenceCount;
-typedef struct Ordinal
-{
-	int kind, id, next;
-} Ordinal;
-static Ordinal ordinals[4 * MAX_ITEMS];
-static int ordinalCount;
+static int substep;
+static int occurrenceStage;
+static uint32_t occurrencePoint = UINT32_MAX;
 static void occur(int kind, int id, double quantity, double threshold, double bound)
 {
-	int ordinal = 0;
-	int k = 0;
-	for (; k < ordinalCount; ++k)
-		if (ordinals[k].kind == kind && ordinals[k].id == id) break;
-	if (k == ordinalCount)
-	{
-		if (ordinalCount == 4 * MAX_ITEMS) fail("too many decision entities");
-		ordinals[ordinalCount++] = (Ordinal){ kind, id, 0 };
-	}
-	ordinal = ordinals[k].next++;
 	if (occurrenceCount == MAX_OCCURRENCES) fail("too many decision occurrences");
-	occurrences[occurrenceCount++] = (Occurrence){ kind, id, ordinal, (float)quantity, (float)threshold, (float)bound };
+	occurrences[occurrenceCount++] = (Occurrence){ kind, id, substep, occurrenceStage, occurrencePoint, (float)quantity, (float)threshold, (float)bound };
 }
 // Records the decision (and reports it if within its bound, or ten of them as near); returns whether to flip it.
 static bool decide(int kind, int id, double quantity, double threshold, double bound, double window)
@@ -375,6 +364,8 @@ static bool decide(int kind, int id, double quantity, double threshold, double b
 // denom by at most half an ulp of either product; ulp(a*e) + ulp(b*b) bounds that.
 static bool segmentDecision(float ae, float bb, float denom, float threshold)
 {
+	occurrenceStage = 0;
+	occurrencePoint = UINT32_MAX;
 	return decide(KIND_SEGMENT, b3OracleContactId, denom, threshold, ulp(ae) + ulp(bb), windowOf(flipContacts, flipContactWindows, flipContactCount, b3OracleContactId));
 }
 
@@ -398,8 +389,9 @@ static V rotateError(b3Quat q, b3Vec3 v)
 static void separationDecision(b3Contact* const* contacts, int width, const void* s, void* separated, const void* normal,
 							   const void* dpA, const void* dpB, const void* dqA, const void* dqB, const void* rA,
 							   const void* rB, const void* normalA, const void* normalB, const void* normalSeparation,
-							   const void* baseSeparation, const void* normalMass)
+							   const void* baseSeparation, const void* normalMass, int pointIndex)
 {
+	occurrenceStage = 1;
 	const float* M = normalMass;
 	const float* S = s;
 	float* mask = separated;
@@ -421,6 +413,7 @@ static void separationDecision(b3Contact* const* contacts, int width, const void
 		double dA = fabs(na.x * ra.x + na.y * ra.y + na.z * ra.z), dB = fabs(nb.x * rb.x + nb.y * rb.y + nb.z * rb.z);
 		double bound = errNormal + errA + errB + gam(3) * (fabs(NS[lane]) + dA + dB + fabs(BS[lane]));
 		int id = contacts[lane]->contactId;
+		occurrencePoint = contacts[lane]->manifolds[0].points[pointIndex].featureId;
 		if (decide(KIND_SEPARATION, id, S[lane], 0.0, bound, windowOf(flipContacts, flipContactWindows, flipContactCount, id)))
 			mask[lane] = mask[lane] != 0.0f ? 0.0f : 1.0f;
 	}
@@ -432,6 +425,8 @@ static void rollingDecision(b3Contact* const* contacts, int width, const void* l
 							const void* oldImpulse, const void* impulse, const void* rollingMass, const void* wA, const void* wB,
 							const void* rollingMask)
 {
+	occurrenceStage = 2;
+	occurrencePoint = UINT32_MAX;
 	const float *L = lengthSquared, *X = maxImpulse, *O = oldImpulse, *I = impulse, *M = rollingMass, *A = wA, *B = wB, *R = rollingMask;
 	float* K = mask;
 	for (int lane = 0; lane < width; ++lane)
@@ -481,6 +476,8 @@ static float limitDecision(int jointId, int limit, bool useBias, float c, float 
 						   b3Quat frameA, b3Quat frameB, b3Quat relQ)
 {
 	if (!useBias) return c; // without bias both sides of c > 0 meet at c = 0
+	occurrenceStage = 1;
+	occurrencePoint = UINT32_MAX;
 	Q qa = qmulAbs(qabs(dqA), qabs(frameA)), qb = qmulAbs(qabs(dqB), qabs(frameB));
 	Q ea = qscale(gam(4), qa), eb = qscale(gam(4), qb);
 	Q er = qadd(qscale(gam(4), qmulAbs(qa, qb)), qadd(qmulAbs(ea, qb), qmulAbs(qa, eb)));
@@ -518,6 +515,8 @@ static float translationDecision(int jointId, int limit, bool useBias, float C, 
 	double translation = d.x * axis.x + d.y * axis.y + d.z * axis.z;
 	double bound = gam(3) * vdot(vabs(d), vabs(axis)) + vdot(ed, vabs(axis)) + vdot(vabs(d), ea) + gam(1) * (fabs(translation) + fabs(limitValue));
 	double flip = windowOf(flipJoints, flipJointWindows, flipJointCount, jointId);
+	occurrenceStage = useBias ? 1 : 2;
+	occurrencePoint = UINT32_MAX;
 	// speculativeDistance = 0.25 * (upper - lower) rounds twice from the limits.
 	int speculative = limit == 5 ? KIND_PRISMATIC_LOWER_SPECULATIVE : KIND_PRISMATIC_UPPER_SPECULATIVE;
 	if (decide(speculative, jointId, C, speculativeDistance, bound + gam(2) * fabs(speculativeDistance), flip))
@@ -544,13 +543,13 @@ static void writeIll(void)
 	for (int k = 0; k < occurrenceCount; ++k)
 	{
 		Occurrence* o = occurrences + k;
-		fprintf(out, "decision %s %d %d", kindNames[o->kind], o->id, o->ordinal);
+		fprintf(out, "decision %s %d %d %d %d", kindNames[o->kind], o->id, o->substep, o->stage, o->point == UINT32_MAX ? -1 : (int)o->point);
 		putFloat(o->quantity);
 		putFloat(o->threshold);
 		putFloat(o->bound);
 		fprintf(out, "\n");
 	}
-	occurrenceCount = ordinalCount = 0;
+	occurrenceCount = 0;
 }
 
 // The scene in creation order, so body, shape and joint ids are scene indices and joint colors are
@@ -767,7 +766,7 @@ static void addToColor(b3World* world, b3Contact* contact, int wanted)
 // A stage hook to localize a red within a step: after stage `stopType` of color `stopColor` (-1 for
 // any) in substep `stopSubstep`, every body's velocities and substep deltas and every joint's
 // impulses are kept, and emitted with the step's result.
-static int stopSubstep = -1, stopType, stopColor, substep;
+static int stopSubstep = -1, stopType, stopColor;
 static b3World* stageWorld;
 static char* stageLines;
 static size_t stageLength;
@@ -959,7 +958,7 @@ static void loadAndStep(void)
 	stopColor = readInt();
 	expect("end");
 
-	decisionCount = occurrenceCount = ordinalCount = 0;
+	decisionCount = occurrenceCount = 0;
 	substep = 0;
 	stageWorld = world;
 	b3World_Step(worldId, scene.timeStep, scene.subStepCount);
@@ -989,6 +988,7 @@ static void rollout(void)
 	b3World* world = b3GetWorldFromId(worldId);
 	for (int k = 0; k < steps; ++k)
 	{
+		substep = 0;
 		b3World_Step(worldId, scene.timeStep, scene.subStepCount);
 		writeIll();
 		writeResult(world);
@@ -1041,7 +1041,9 @@ static void decideCommand(void)
 		probe.contactId = -1;
 		b3Contact* lanes[1] = { &probe };
 		float mask = sv > 0.0f ? 1.0f : 0.0f;
-		separationDecision(lanes, 1, &sv, &mask, &n, &pa, &pb, &qa, &qb, &ra, &rb, &na, &nb, &ns, &base, &mass);
+		static b3Manifold probeManifold;
+		probe.manifolds = &probeManifold;
+		separationDecision(lanes, 1, &sv, &mask, &n, &pa, &pb, &qa, &qb, &ra, &rb, &na, &nb, &ns, &base, &mass, 0);
 		result = mask;
 	}
 	else if (strcmp(kind, "rolling") == 0)

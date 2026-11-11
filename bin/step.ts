@@ -104,10 +104,10 @@ export interface StageBody { linearVelocity: Vec3; angularVelocity: Vec3; deltaP
 
 /** A flipped entity's decisions within max(local bound, `window`) of their threshold take the other side. */
 export interface Entity { entity: "contact" | "joint"; id: number; window?: number }
-/** One occurrence of a hooked decision in a step: its kind and entity, and its ordinal among that
- * entity's occurrences of the kind, in the fixed order upstream visits them (substep, iteration,
- * manifold point). */
-export interface Decision { kind: DecisionKind; id: number; ordinal: number; quantity: number; threshold: number; bound: number }
+/** One occurrence of a hooked decision in a step, keyed by its place in upstream's loop: kind and
+ * entity, substep (0 before the solver's first), stage (0 collide, 1 the biased solve or push, 2 relax)
+ * and manifold point by feature id (-1 for a decision per contact or joint; a limit's side is its kind). */
+export interface Decision { kind: DecisionKind; id: number; substep: number; stage: number; point: number; quantity: number; threshold: number; bound: number }
 /** The discrete tests the step lane bounds: b3SegmentDistance's parallel test, contact push's
  * speculative switch on separation, joint limits' speculative switch, and a prismatic limit's
  * speculative distance, beyond which it is not solved, and contact relax's rolling resistance clamp. */
@@ -224,7 +224,7 @@ export function decodeResult(lines: string[]): StepResult {
     const v3 = (): Vec3 => [num(), num(), num()];
     if (tag === "body") result.bodies.push({ origin: v3(), center: v3(), rotation: [num(), num(), num(), num()], linearVelocity: v3(), angularVelocity: v3() });
     else if (tag === "joint") { const color = int(); result.joints.push({ color, impulses: words.slice(1).map(unf) }); }
-    else if (tag === "decision") result.decisions.push({ kind: words[i++] as DecisionKind, id: int(), ordinal: int(), quantity: num(), threshold: num(), bound: num() });
+    else if (tag === "decision") result.decisions.push({ kind: words[i++] as DecisionKind, id: int(), substep: int(), stage: int(), point: int(), quantity: num(), threshold: num(), bound: num() });
     else if (tag === "ill" || tag === "near") (tag === "ill" ? result.illConditioned : result.near).push({ kind: words[i++] as DecisionKind, id: int(), quantity: num(), bound: num(), side: int() === 1 });
     else if (tag === "stagebody" || tag === "stagejoint") {
       result.stage ??= { bodies: [], joints: [] };
@@ -250,7 +250,7 @@ export function decodeResult(lines: string[]): StepResult {
   // Upstream visits a color's constraints in an order a rebuilt world need not share.
   const order = (a: IllConditioned, b: IllConditioned) => a.kind.localeCompare(b.kind) || a.id - b.id || a.quantity - b.quantity || a.bound - b.bound;
   result.illConditioned.sort(order);
-  result.decisions.sort((a, b) => a.kind.localeCompare(b.kind) || a.id - b.id || a.ordinal - b.ordinal);
+  result.decisions.sort((a, b) => a.kind.localeCompare(b.kind) || a.id - b.id || a.substep - b.substep || a.stage - b.stage || a.point - b.point);
   result.near.sort(order);
   return result;
 }
@@ -348,21 +348,34 @@ const discrete = (r: StepResult) => JSON.stringify([r.contacts.map((c) => [c.id,
  * which some occurrence of it ended on the other side of its threshold from the baseline's. */
 export interface Unstable { kind: DecisionKind; id: number; margin: number; bound: number; spread: number; window: number; otherSideRuns: number }
 
-/** The unstable decisions of a baseline step given its perturbed runs, occurrence by occurrence. */
-export function unstableDecisions(baseline: Decision[], runs: Decision[][]): Unstable[] {
-  const key = (d: Decision) => `${d.kind} ${d.id} ${d.ordinal}`;
+/** An occurrence's key: its place in upstream's loop, never its visit order. */
+export const occurrenceKey = (d: Decision) => `${d.kind} ${d.id} ${d.substep} ${d.stage} ${d.point}`;
+
+/** The unstable decisions of a baseline step given its perturbed runs, occurrence by occurrence. Only
+ * occurrences whose keys exist in both the baseline and a run are compared; `unmatched` counts those
+ * present in only one, which never count as the other side and never feed a spread. */
+export function unstableDecisions(baseline: Decision[], runs: Decision[][]): { unstable: Unstable[]; unmatched: number } {
+  const key = occurrenceKey;
   const occurrences = new Map(baseline.map((d) => [key(d), { decision: d, margin: d.quantity - d.threshold, spread: 0 }]));
+  if (occurrences.size !== baseline.length) throw new Error("decision occurrences do not have unique keys");
   const otherSide = new Map<string, number>();
+  let unmatched = 0;
   for (const run of runs) {
     const crossed = new Set<string>();
+    const seen = new Set<string>();
     for (const d of run) {
       const o = occurrences.get(key(d));
-      if (!o) continue;
+      if (!o) {
+        unmatched++;
+        continue;
+      }
+      seen.add(key(d));
       const margin = d.quantity - d.threshold;
       o.spread = Math.max(o.spread, Math.abs(margin - o.margin));
       if (margin > 0 !== o.margin > 0) crossed.add(`${d.kind} ${d.id}`);
     }
     for (const entity of crossed) otherSide.set(entity, (otherSide.get(entity) ?? 0) + 1);
+    unmatched += occurrences.size - seen.size;
   }
   const unstable = new Map<string, Unstable>();
   for (const { decision, margin, spread } of occurrences.values()) {
@@ -376,12 +389,12 @@ export function unstableDecisions(baseline: Decision[], runs: Decision[][]): Uns
     }
     unstable.set(entity, { kind: decision.kind, id: decision.id, margin, bound: decision.bound, spread, window: Math.max(window, prior?.window ?? 0), otherSideRuns: otherSide.get(entity) ?? 0 });
   }
-  return [...unstable.values()];
+  return { unstable: [...unstable.values()], unmatched };
 }
 /** The factor on a spread, fixed with SPREAD_DIRECTIONS before any port was held to it. */
 export const SPREAD_FACTOR = 10;
 /** `spreadAll` is the spread over every perturbed run, those whose discrete outcome changed included. */
-export interface Spread { result: StepResult; spread: Map<string, number>; spreadAll: Map<string, number>; discreteChanges: number; unstable: Unstable[] }
+export interface Spread { result: StepResult; spread: Map<string, number>; spreadAll: Map<string, number>; discreteChanges: number; unstable: Unstable[]; unmatched: number }
 
 export interface StepOracle {
   /** Box3D's mass properties for every body, from the scene's shapes. */
@@ -477,8 +490,8 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
           if (b !== undefined) spread.set(key, Math.max(spread.get(key) ?? 0, Math.abs(x - b)));
         }
       }
-      const unstable = unstableDecisions(result.decisions, runs);
-      return { result, spread, spreadAll, discreteChanges, unstable };
+      const { unstable, unmatched } = unstableDecisions(result.decisions, runs);
+      return { result, spread, spreadAll, discreteChanges, unstable, unmatched };
     },
     decide: (kind, operands, flip = false) =>
       exchange(`decide ${kind} ${kind === "separation" || kind === "rolling" ? vec(operands) : `${operands[0]} ${vec(operands.slice(1))}`} ${flip ? 1 : 0}\n`, async () => {

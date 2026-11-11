@@ -27,11 +27,11 @@ extern b3OracleSegmentHook* b3OracleSegmentDecision;
 typedef struct b3Contact b3Contact;
 // Contact push's `s > 0` per lane: wide values as B3_SIMD_WIDTH floats; the hook may rewrite
 // `separated`'s lanes. The step lane's scalar build holds a lane's mask as 1.0f or 0.0f. A lane
-// without this point has zero normal mass.
+// without this point has zero normal mass; `pointIndex` is the point within each lane's manifold.
 typedef void b3OracleSeparationHook( b3Contact* const* contacts, int width, const void* s, void* separated, const void* normal,
 									 const void* dpA, const void* dpB, const void* dqA, const void* dqB, const void* rA,
 									 const void* rB, const void* normalA, const void* normalB, const void* normalSeparation,
-									 const void* baseSeparation, const void* normalMass );
+									 const void* baseSeparation, const void* normalMass, int pointIndex );
 extern b3OracleSeparationHook* b3OracleSeparationDecision;
 // A revolute or spherical limit's `c > 0`, from its relative rotation; returns the c to test.
 typedef float b3OracleLimitHook( int jointId, int limit, bool useBias, float c, float limitValue, b3Quat dqA, b3Quat dqB,

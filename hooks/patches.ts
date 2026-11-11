@@ -133,7 +133,7 @@ export const PATCHES: OraclePatch[] = [
     marker: "step.contact-push.separation",
     optional: true,
     anchor: "\t\t\t\tb3FloatW separated = b3GreaterThanW( s, zeroW );\n",
-    addition: `\t\t\t\tb3FloatW separated = b3GreaterThanW( s, zeroW );\n${STEP}\t\t\t\tif ( b3OracleSeparationDecision != NULL )\n\t\t\t\t{\n\t\t\t\t\tb3OracleSeparationDecision( c->contacts, B3_SIMD_WIDTH, &s, &separated, &cm->normal, &bA.dp, &bB.dp, &bA.dq, &bB.dq, &rA, &rB, &normalA, &normalB, &normalSeparation, &cp->baseSeparations, &cp->normalMasses );\n\t\t\t\t}\n#endif\n`,
+    addition: `\t\t\t\tb3FloatW separated = b3GreaterThanW( s, zeroW );\n${STEP}\t\t\t\tif ( b3OracleSeparationDecision != NULL )\n\t\t\t\t{\n\t\t\t\t\tb3OracleSeparationDecision( c->contacts, B3_SIMD_WIDTH, &s, &separated, &cm->normal, &bA.dp, &bB.dp, &bA.dq, &bB.dq, &rA, &rB, &normalA, &normalB, &normalSeparation, &cp->baseSeparations, &cp->normalMasses, pointIndex );\n\t\t\t\t}\n#endif\n`,
   },
   {
     file: "src/contact_solver_wide.inl",
