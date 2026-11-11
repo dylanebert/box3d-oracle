@@ -89,3 +89,55 @@ export function andersonDarling(sample: readonly number[]): number | undefined {
 
 /** A*²'s critical value at significance 0.05, mean and variance estimated (the same table). */
 export const ANDERSON_DARLING_05 = 0.752;
+
+/** A quantized sample modelled as a rounded normal (Sheppard, grouped data): its lattice step h, the
+ * smallest gap between its distinct values; its deviation with Sheppard's correction,
+ * sqrt(max(0, s² - h²/12)); and whether a chi-square goodness of fit on the lattice's bins rejects the
+ * normal rounded to them at 0.05. Bins are the lattice points from the least value to the greatest,
+ * the outer two taking the tails, merged left to right until each expects at least ROUNDED_MIN_EXPECTED
+ * runs; with fewer than one degree of freedom left (bins less the two estimated parameters less one)
+ * the fit cannot be tested and is not rejected. A sample spanning more than 4n lattice points is not
+ * treated as quantized and is rejected. */
+export const ROUNDED_MIN_EXPECTED = 5;
+export function roundedNormal(sample: readonly number[]): { h: number; sigma: number; rejected: boolean } {
+  const n = sample.length;
+  const sorted = [...sample].sort((a, b) => a - b);
+  const distinct = sorted.filter((x, i) => i === 0 || x !== sorted[i - 1]);
+  let h = Infinity;
+  for (let i = 1; i < distinct.length; i++) h = Math.min(h, distinct[i] - distinct[i - 1]);
+  const mean = sample.reduce((s, x) => s + x, 0) / n;
+  const s2 = sample.reduce((s, x) => s + (x - mean) ** 2, 0) / (n - 1);
+  const sigma = Math.sqrt(Math.max(0, s2 - (h * h) / 12));
+  const lo = distinct[0];
+  const points = Math.round((distinct[distinct.length - 1] - lo) / h) + 1;
+  if (!(points <= 4 * n)) return { h, sigma, rejected: true };
+  const observed = new Array<number>(points).fill(0);
+  for (const x of sample) observed[Math.min(points - 1, Math.max(0, Math.round((x - lo) / h)))]++;
+  // Under N(mean, sigma) rounded to the lattice, the outer bins taking the tails; sigma 0 puts all mass
+  // on the point nearest the mean.
+  const cdf = (edge: number) => (sigma > 0 ? normalCdf((edge - mean) / sigma) : edge >= mean ? 1 : 0);
+  const expected = observed.map((_, j) => {
+    const below = j === 0 ? 0 : cdf(lo + (j - 0.5) * h);
+    const above = j === points - 1 ? 1 : cdf(lo + (j + 0.5) * h);
+    return n * (above - below);
+  });
+  const bins: { o: number; e: number }[] = [];
+  let o = 0, e = 0;
+  for (let j = 0; j < points; j++) {
+    o += observed[j];
+    e += expected[j];
+    if (e >= ROUNDED_MIN_EXPECTED) {
+      bins.push({ o, e });
+      o = e = 0;
+    }
+  }
+  if (bins.length === 0) bins.push({ o, e });
+  else {
+    bins[bins.length - 1].o += o;
+    bins[bins.length - 1].e += e;
+  }
+  const dof = bins.length - 3;
+  if (dof < 1) return { h, sigma, rejected: false };
+  const statistic = bins.reduce((s, b) => s + (b.e > 0 ? (b.o - b.e) ** 2 / b.e : b.o > 0 ? Infinity : 0), 0);
+  return { h, sigma, rejected: statistic > chiSquareQuantile(0.95, dof) };
+}

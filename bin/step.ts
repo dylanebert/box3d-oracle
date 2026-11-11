@@ -1,7 +1,7 @@
 // Client for the step lane (adapter/step.c): a scene once, then one b3World_Step per request from a
 // complete loaded state. Numbers cross as float32 bits; an omitted optional field is upstream's default.
 import { buildStepOracle, buildStepOracleMca } from "./oracle";
-import { ANDERSON_DARLING_05, andersonDarling, chiSquareQuantile, normalQuantile } from "./stats";
+import { ANDERSON_DARLING_05, andersonDarling, chiSquareQuantile, normalQuantile, roundedNormal } from "./stats";
 
 export type Vec3 = [number, number, number];
 /** x, y, z, w. */
@@ -314,18 +314,27 @@ export function nextState(result: StepResult, applied: { force?: Vec3; torque?: 
  * (section 4.1) a quantity's tolerance is |mean Z| + k sigma, sigma the sample deviation of the n runs
  * kept inflated by its one-sided chi-square bound at MCA_CONFIDENCE, sqrt((n - 1) / chi2_{1-c}(n - 1)),
  * and k = familyQuantile(N), the normal quantile at 1 - FAMILY_ALPHA / (2N) for the N quantities a caller
- * compares. Where Anderson-Darling rejects normality at 0.05 (ANDERSON_DARLING_05), or fewer than eight
- * runs are kept, the quantity falls back to the distribution-free (Bernoulli, section 5) range bound,
- * sohierBound of its largest change. Every constant is fixed here before any scene ran.
+ * compares. Where Anderson-Darling rejects normality at 0.05 (ANDERSON_DARLING_05) because the runs sit
+ * on a lattice (at most QUANTIZED_DISTINCT_FRACTION of them distinct), the quantity is modelled as a
+ * rounded normal, Sheppard's treatment of grouped data: sigma^2 = s^2 - h^2/12 (floored at zero) for
+ * the lattice step h, inflated by the same chi-square bound, and a tolerance of |mean Z| + k sigma + h,
+ * if a chi-square goodness of fit on the lattice's bins does not reject that model at 0.05
+ * (stats.roundedNormal). Where both are rejected, or fewer than eight runs are kept, the quantity
+ * falls back to the distribution-free (Bernoulli, section 5) range bound, sohierBound of its largest
+ * change. Every constant is fixed here before any scene ran.
  *
  * What each bound guarantees is per quantity, as the paper's intervals are: a normal quantity's sigma
  * bound holds at confidence 0.95 and, with k for one quantity, a fresh run at probability 0.95; a
- * fallback quantity's range bound holds a fresh run at probability 0.99 with confidence 0.95 (Table 3).
- * Nothing here is a family-wise guarantee over a scene's schedule: the Bonferroni k on the normal
- * quantities is margin, the fallback quantities carry only their individual bound, and the quantities'
+ * lattice quantity's the same of the rounded normal its fit did not reject, the + h covering the
+ * rounding of a fresh run to the lattice, so it rests on that fit as the normal one rests on
+ * Anderson-Darling's; a fallback quantity's range bound holds a fresh run at probability 0.99 with
+ * confidence 0.95 (Table 3).
+ * Nothing here is a family-wise guarantee over a scene's schedule: the Bonferroni k on the normal and
+ * lattice quantities is margin, the fallback quantities carry only their individual bound, and the quantities'
  * independence is not established. Further, the chi-square inflation is per quantity (its 0.95 is not
- * shared across the family), the mean term |mean Z| carries no confidence allowance, and Anderson-Darling
- * not rejecting normality does not certify the tails k reaches into. What the claim cannot guarantee, a
+ * shared across the family), the mean term |mean Z| carries no confidence allowance, and neither
+ * Anderson-Darling nor the lattice fit not rejecting certifies the tails k reaches into; the lattice
+ * step is the smallest gap between a quantity's distinct values, which assumes an even lattice. What the claim cannot guarantee, a
  * null run measures: shallot-gpu-physics's qualify-oracle holds independentRun's results, upstream's
  * rounding alone, through each full schedule and counts its reds. */
 export const MCA_CONFIDENCE = 0.95;
@@ -360,29 +369,46 @@ export function deviationInflation(n: number): number {
   return f;
 }
 
-/** A quantity's spread: under normality |mean| + k sigma; otherwise `range`. `tested` is false for a
- * quantity that no run changed or too few runs kept to test; `normal` is whether the CNH bound applies. */
-export interface Bound { mean: number; sigma: number; range: number; normal: boolean; tested: boolean }
-export const tolerance = (b: Bound, k: number) => (b.normal ? b.mean + k * b.sigma : b.range);
+/** How a quantity's runs are modelled: `exact` when no run changed it; `normal` when Anderson-Darling
+ * does not reject normality of any component; `lattice` when every component it rejects is quantized
+ * (QUANTIZED_DISTINCT_FRACTION) and the rounded normal fits it; otherwise `range`. */
+export type BoundModel = "exact" | "normal" | "lattice" | "range";
+/** A quantity's spread: |mean| + k sigma + lattice under the normal and lattice models, `range`
+ * otherwise. `lattice` is the lattice step of its quantized components (in quadrature for a vector),
+ * zero for a normal quantity; their sigma takes Sheppard's correction. */
+export interface Bound { mean: number; sigma: number; lattice: number; range: number; model: BoundModel }
+export const tolerance = (b: Bound, k: number) => (b.model === "range" ? b.range : b.mean + k * b.sigma + b.lattice);
 const MIN_KEPT = 8;
+/** A component is quantized when its runs take at most this fraction of their count in distinct
+ * values, fixed before any scene ran under it. */
+export const QUANTIZED_DISTINCT_FRACTION = 0.25;
 
 /** The bound of a quantity from its runs' changes: one component per sample row (a scalar's change,
  * a vector's change, a rotation's rotation vector), `largest` the norm or angle the range bounds. */
 export function bound(changes: readonly (readonly number[])[], largest: readonly number[]): Bound {
   const n = changes.length;
   const range = sohierBound(Math.max(0, ...largest));
-  if (n < MIN_KEPT) return { mean: 0, sigma: 0, range, normal: false, tested: false };
-  let variance = 0, tested = false, normal = true;
+  if (n < MIN_KEPT) return { mean: 0, sigma: 0, lattice: 0, range, model: "range" };
+  let variance = 0, lattice = 0;
+  let model: BoundModel = "exact";
   const mean = changes[0].map((_, c) => changes.reduce((sum, z) => sum + z[c], 0) / n);
   for (let c = 0; c < mean.length; c++) {
     const column = changes.map((z) => z[c]);
-    variance += column.reduce((sum, z) => sum + (z - mean[c]) ** 2, 0) / (n - 1);
+    const s2 = column.reduce((sum, z) => sum + (z - mean[c]) ** 2, 0) / (n - 1);
     const a = andersonDarling(column);
     if (a === undefined) continue;
-    tested = true;
-    if (a > ANDERSON_DARLING_05) normal = false;
+    if (a <= ANDERSON_DARLING_05) {
+      variance += s2;
+      if (model === "exact") model = "normal";
+      continue;
+    }
+    const fit = new Set(column).size <= QUANTIZED_DISTINCT_FRACTION * n ? roundedNormal(column) : undefined;
+    if (!fit || fit.rejected) return { mean: Math.hypot(...mean), sigma: 0, lattice: 0, range, model: "range" };
+    variance += fit.sigma ** 2;
+    lattice = Math.hypot(lattice, fit.h);
+    model = "lattice";
   }
-  return { mean: Math.hypot(...mean), sigma: Math.sqrt(variance) * deviationInflation(n), range, normal, tested };
+  return { mean: Math.hypot(...mean), sigma: Math.sqrt(variance) * deviationInflation(n), lattice, range, model };
 }
 
 /** A result's continuous values by key: `bodies.<i>.<field>.<k>`, `joints.<i>.impulses.<k>`,

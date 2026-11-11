@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { andersonDarling, ANDERSON_DARLING_05, chiSquareQuantile, normalQuantile } from "../bin/stats";
-import { CONTACT_LANES, continuousValues, deviationInflation, entityOf, familyQuantile, MCA_RUNS, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, quantities, rotationAngle, sohierBound, tolerance, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
+import { andersonDarling, ANDERSON_DARLING_05, chiSquareQuantile, normalQuantile, roundedNormal } from "../bin/stats";
+import { bound, CONTACT_LANES, continuousValues, deviationInflation, entityOf, familyQuantile, MCA_RUNS, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, quantities, rotationAngle, sohierBound, tolerance, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
 
 // The pinned official Box3D the step lane is held at; building it fetches official main once into the cache.
 const SHA = "336263320469e5e9febfe18697ab562488f7e97a";
@@ -292,6 +292,30 @@ test("Anderson-Darling accepts normal samples at about its level and rejects uni
   expect(andersonDarling([1, 1, 1, 1, 1, 1, 1, 1])).toBeUndefined();
 });
 
+test("a quantized sample is a rounded normal when its lattice fit holds, and falls back when it does not", () => {
+  let seed = 11;
+  const uniform = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const normal = () => Math.sqrt(-2 * Math.log(uniform())) * Math.cos(2 * Math.PI * uniform());
+  const h = 2 ** -20;
+  const rounded = Array.from({ length: MCA_RUNS }, () => Math.round((1.5 * normal()) ) * h);
+  const fit = roundedNormal(rounded);
+  expect(fit.h).toBe(h);
+  expect(fit.rejected).toBe(false);
+  expect(fit.sigma / h).toBeGreaterThan(1.2);
+  expect(fit.sigma / h).toBeLessThan(1.8);
+  const b = bound(rounded.map((z) => [z]), rounded.map(Math.abs));
+  expect(b.model).toBe("lattice");
+  expect(b.lattice).toBe(h);
+  expect(tolerance(b, 5)).toBeCloseTo(b.mean + 5 * b.sigma + h, 15);
+  // Two separated clusters on the lattice are no rounded normal.
+  const split = Array.from({ length: MCA_RUNS }, (_, i) => (i % 2 ? 0 : 12 * h) + Math.round(0.3 * normal()) * h);
+  expect(roundedNormal(split).rejected).toBe(true);
+  expect(bound(split.map((z) => [z]), split.map(Math.abs)).model).toBe("range");
+  // A sample of distinct values is not quantized: rejected by Anderson-Darling, it takes the range.
+  const spread = Array.from({ length: MCA_RUNS }, uniform);
+  expect(bound(spread.map((z) => [z]), spread).model).toBe("range");
+});
+
 test("Verificarlo's build of upstream rounding to nearest is the native lane bit for bit", async () => {
   const nearest = await openStepOracle(SHA, scene, { arithmetic: "nearest", sqrt: "nearest" });
   try {
@@ -347,8 +371,8 @@ test("the CNH tolerance holds a fresh independent set of runs at its stated rate
   const base = continuousValues(result);
   const fresh = (await oracle.randomlyRounded(state)).map(continuousValues);
   expect(new Set(fresh.map((v) => JSON.stringify([...v.values()]))).size).toBe(MCA_RUNS);
-  const normal = [...kept.values].filter(([, b]) => b.normal && b.tested);
-  const rejected = [...kept.values].filter(([, b]) => b.tested && !b.normal).length;
+  const normal = [...kept.values].filter(([, b]) => b.model === "normal");
+  const rejected = [...kept.values].filter(([, b]) => b.model === "lattice" || b.model === "range").length;
   expect(normal.length).toBeGreaterThan(50);
   const exceed = (k: number) => normal.reduce((count, [key, b]) => count + fresh.filter((v) => Math.abs(v.get(key)! - base.get(key)!) > tolerance(b, k)).length, 0);
   const pairs = normal.length * fresh.length;
@@ -356,7 +380,13 @@ test("the CNH tolerance holds a fresh independent set of runs at its stated rate
   // quantity-run pairs past the Bonferroni k for all of them.
   expect(exceed(familyQuantile(1)) / pairs).toBeLessThanOrEqual(0.05);
   expect(exceed(familyQuantile(pairs))).toBe(0);
-  console.log(JSON.stringify({ tested: normal.length + rejected, rejected, individual: exceed(familyQuantile(1)) / pairs }));
+  // The lattice quantities' tolerance holds the fresh set at its stated rate too.
+  const lattice = [...kept.values].filter(([, b]) => b.model === "lattice");
+  expect(lattice.length).toBeGreaterThan(50);
+  const latticeExceed = (k: number) => lattice.reduce((count, [key, b]) => count + fresh.filter((v) => Math.abs(v.get(key)! - base.get(key)!) > tolerance(b, k)).length, 0);
+  expect(latticeExceed(familyQuantile(1)) / (lattice.length * fresh.length)).toBeLessThanOrEqual(0.05);
+  const models = Object.fromEntries(["exact", "normal", "lattice", "range"].map((m) => [m, [...kept.values].filter(([, b]) => b.model === m).length]));
+  console.log(JSON.stringify({ models, rejected, individual: exceed(familyQuantile(1)) / pairs, lattice: latticeExceed(familyQuantile(1)) / (lattice.length * fresh.length) }));
 }, 60_000);
 
 test("an independent run is drawn outside the bounds' runs and repeats", async () => {
@@ -384,10 +414,14 @@ test("a vector's bound is its components' and a rotation's is an angle", async (
     if (g.rotation) continue;
     const parts = g.members.map((k) => kept.values.get(k)!);
     expect(v.range).toBeGreaterThanOrEqual(Math.max(...parts.map((p) => p.range)));
+    // A vector falls back exactly when one of its components does; otherwise it takes theirs.
+    expect(v.model === "range").toBe(parts.some((p) => p.model === "range"));
+    if (v.model === "range") continue;
     expect(v.sigma).toBeCloseTo(Math.hypot(...parts.map((p) => p.sigma)), 12);
+    expect(v.lattice).toBeCloseTo(Math.hypot(...parts.map((p) => p.lattice)), 15);
   }
   expect(kept.vectors.get("bodies.0.center")!.range).toBe(0);
-  expect(kept.vectors.get("bodies.3.rotation")!.sigma).toBeGreaterThan(0);
+  expect(kept.vectors.get("bodies.3.rotation")!.range).toBeGreaterThan(0);
   expect(rotationAngle([0, 0, Math.sin(0.05), Math.cos(0.05)], [0, 0, 0, -1])).toBeCloseTo(0.1, 12);
 }, 60_000);
 
