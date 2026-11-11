@@ -37,8 +37,8 @@ extern b3OracleSeparationHook* b3OracleSeparationDecision;
 typedef float b3OracleLimitHook( int jointId, int limit, bool useBias, float c, float limitValue, b3Quat dqA, b3Quat dqB,
 								 b3Quat frameA, b3Quat frameB, b3Quat relQ );
 extern b3OracleLimitHook* b3OracleLimitDecision;
-// A prismatic limit's `C > 0`, from its translation's operands; returns the C to test.
-typedef float b3OracleTranslationHook( int jointId, int limit, bool useBias, float C, float limitValue, b3Vec3 dcA, b3Vec3 dcB,
+// A prismatic limit's `C < speculativeDistance` and `C > 0`, from its translation's operands; returns the C to test.
+typedef float b3OracleTranslationHook( int jointId, int limit, bool useBias, float C, float limitValue, float speculativeDistance, b3Vec3 dcA, b3Vec3 dcB,
 									   b3Vec3 deltaCenter, b3Vec3 rA, b3Vec3 rB, b3Vec3 frameA, b3Vec3 frameB, b3Quat dqA,
 									   b3Quat dqB, b3Vec3 localAxis, b3Vec3 axis, b3Vec3 d );
 extern b3OracleTranslationHook* b3OracleTranslationDecision;

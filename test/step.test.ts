@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { nextState, OVERFLOW_COLOR, openStepOracle, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
+import { nextState, OVERFLOW_COLOR, openStepOracle, perturb, SPREAD_SCALE, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
 
 // The pinned official Box3D the step lane is held at; building it fetches official main once into the cache.
 const SHA = "336263320469e5e9febfe18697ab562488f7e97a";
@@ -184,19 +184,20 @@ const absDot = (a: number[], b: number[]) => sum(a.map((x, i) => Math.abs(x * b[
 const estimates: Record<string, (o: number[]) => number> = {
   separation: (o) => U * (absDot(o.slice(1, 4), o.slice(4, 7).map((x, i) => Math.abs(x) + Math.abs(o[7 + i]))) + absDot(o.slice(24, 27), o.slice(18, 21)) + absDot(o.slice(27, 30), o.slice(21, 24)) + Math.abs(o[30]) + Math.abs(o[31]) + sum(o.slice(18, 24).map(Math.abs))),
   limit: (o) => { const [x, y, z, w] = o.slice(19, 23); const twist = o[0] !== 4; const r = twist ? Math.hypot(z, w) : 1; return U * ((twist ? 2 * (Math.abs(z) + Math.abs(w)) / (r * r) : 4) + Math.abs(o[2])); },
-  translation: (o) => 0.4 * U * (absDot(o.slice(36, 39), o.slice(33, 36)) + sum(o.slice(3, 24).map(Math.abs)) + Math.abs(o[2])),
+  translation: (o) => 0.4 * U * (absDot(o.slice(37, 40), o.slice(34, 37)) + sum(o.slice(4, 25).map(Math.abs)) + Math.abs(o[2])),
 };
 const hooks: [string, "separation" | "limit" | "translation", (q: number) => number[], (q: number, value: number) => boolean][] = [
   ["separation", "separation", (q) => [q, 0, 1, 0, 0, 0, 0, 1e-3, -2e-3, 5e-4, 0, 0, 0, 1, ...unitQuat(0.01, 0.002, 0), 0.1, -0.05, 0.02, -0.03, 0.12, 0.01, 0, 1, 0, 0.0199, 0.9998, 0.002, 2e-3, -0.01], (q, mask) => (mask === 1) === q > 0],
   ...([[0, "revolute-lower"], [2, "twist-lower"], [4, "cone"]] as const).map(([index, name]) => [name, "limit", (q: number) => [index, q, -0.5, ...unitQuat(0.003, -0.001, 0.002), ...unitQuat(-0.002, 0.001, 0.004), ...unitQuat(0.1, 0.2, 0.05), ...unitQuat(-0.3, 0.1, 0.2), ...unitQuat(0.05, 0.3, -0.24)], (q: number, c: number) => (c > 0) === q > 0] as [string, "limit", (q: number) => number[], (q: number, value: number) => boolean]),
-  ["prismatic-lower", "translation", (q) => [5, q, -1.8, 1e-3, 2e-3, 0, -3e-4, 1e-3, 0, 0.2, 1, 0, 0, 0.5, 0, -0.1, -0.4, 0.05, 0, 1, 0, 0, -0.5, 0, ...unitQuat(0.001, 0, 0.002), ...unitQuat(0, 0.003, 0), 1, 0, 0, 1, 0.002, -0.001, 0.3, 1.6, 0.02], (q, c) => (c > 0) === q > 0],
+  ["prismatic-lower", "translation", (q) => [5, q, -1.8, 0.9, 1e-3, 2e-3, 0, -3e-4, 1e-3, 0, 0.2, 1, 0, 0, 0.5, 0, -0.1, -0.4, 0.05, 0, 1, 0, 0, -0.5, 0, ...unitQuat(0.001, 0, 0.002), ...unitQuat(0, 0.003, 0), 1, 0, 0, 1, 0.002, -0.001, 0.3, 1.6, 0.02], (q, c) => (c > 0) === q > 0],
+  ["prismatic-lower-speculative", "translation", (q) => [5, Math.fround(0.9 + q), -1.8, 0.9, 1e-3, 2e-3, 0, -3e-4, 1e-3, 0, 0.2, 1, 0, 0, 0.5, 0, -0.1, -0.4, 0.05, 0, 1, 0, 0, -0.5, 0, ...unitQuat(0.001, 0, 0.002), ...unitQuat(0, 0.003, 0), 1, 0, 0, 1, 0.002, -0.001, 0.3, 1.6, 0.02], (q, c) => (c < 0.9) === Math.fround(0.9 + q) < 0.9],
 ];
 for (const [name, kind, operands, sameSide] of hooks) {
   test(`${name}: a decision within its forward error bound is reported and flips; five bounds away is only near`, async () => {
     const probe = await oracle.decide(kind, operands(0));
     expect(probe.illConditioned.map((d) => d.kind)).toEqual([name]);
     const bound = probe.illConditioned[0].bound;
-    const estimate = estimates[kind](operands(0));
+    const estimate = estimates[kind](operands(0)) + (name.endsWith("speculative") ? 0.9 * U : 0);
     expect(bound).toBeGreaterThan(estimate);
     expect(bound).toBeLessThan(10 * estimate);
     const inside = Math.fround(0.5 * bound);
@@ -233,4 +234,20 @@ test("a stop keeps bodies and joints after its stage", async () => {
   expect(moving).toBeGreaterThan(0);
   expect(atVelocities.stage!.bodies[moving]!.deltaPosition).toEqual([0, 0, 0]);
   expect(atPositions.stage!.joints.length).toBe(scene.joints.length);
+}, 60_000);
+
+test("a spread perturbs every continuous input by at most 2^-23 and measures upstream's response", async () => {
+  const state = nextState(native[120]);
+  const a = perturb(state, 3), b = perturb(state, 3), c = perturb(state, 4);
+  expect(a).toEqual(b);
+  expect(a).not.toEqual(c);
+  const flat = (s: StepState) => [...s.bodies.flatMap((x) => [...x.origin, ...x.center, ...x.rotation, ...x.linearVelocity, ...x.angularVelocity]), ...s.joints.flat(), ...s.contacts.flatMap((x) => [...x.points.map((p) => p.normalImpulse), ...x.frictionImpulse, x.twistImpulse, ...x.rollingImpulse])];
+  const before = flat(state), after = flat(a);
+  expect(after.every((x, i) => Math.abs(x - before[i]) <= 2 * SPREAD_SCALE * Math.abs(before[i]))).toBe(true);
+  expect(after.some((x, i) => x !== before[i])).toBe(true);
+  expect(a.contacts.map((x) => [x.id, x.color, x.points.map((p) => p.featureId), x.cache])).toEqual(state.contacts.map((x) => [x.id, x.color, x.points.map((p) => p.featureId), x.cache]));
+  const { result, spread } = await oracle.stepWithSpread(state);
+  expect(result).toEqual(await oracle.step(state));
+  expect(spread.get("bodies.0.center.1")).toBe(0);
+  expect(Math.max(...[0, 1, 2].map((k) => spread.get(`bodies.3.linearVelocity.${k}`)!))).toBeGreaterThan(0);
 }, 60_000);

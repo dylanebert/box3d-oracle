@@ -104,8 +104,9 @@ export interface StageBody { linearVelocity: Vec3; angularVelocity: Vec3; deltaP
 
 export interface Entity { entity: "contact" | "joint"; id: number }
 /** The discrete tests the step lane bounds: b3SegmentDistance's parallel test, contact push's
- * speculative switch on separation, and joint limits' speculative switch. */
-export type DecisionKind = "segment" | "separation" | "revolute-lower" | "revolute-upper" | "twist-lower" | "twist-upper" | "cone" | "prismatic-lower" | "prismatic-upper";
+ * speculative switch on separation, joint limits' speculative switch, and a prismatic limit's
+ * speculative distance, beyond which it is not solved. */
+export type DecisionKind = "segment" | "separation" | "revolute-lower" | "revolute-upper" | "twist-lower" | "twist-upper" | "cone" | "prismatic-lower" | "prismatic-upper" | "prismatic-lower-speculative" | "prismatic-upper-speculative";
 /** A decision whose deciding quantity upstream computed within `bound` (its forward error bound from
  * the site's operands) of the threshold, where a port's legal rounding may land on either side.
  * `id` is a contact's for segment and separation, else a joint's; `side` is upstream's. */
@@ -269,12 +270,78 @@ export function nextState(result: StepResult, applied: { force?: Vec3; torque?: 
   };
 }
 
+/** Backward error analysis (Higham): a backward-stable step is the exact step of an input perturbed by
+ * about an ulp, so the spread a port may legitimately show is upstream's response to such inputs. The
+ * spread runs upstream's step from the state with every continuous input scaled by 1 + u 2^-23, u
+ * uniform in [-1, 1) and independent per value, in SPREAD_DIRECTIONS seeded directions fixed here. */
+export const SPREAD_DIRECTIONS = 8;
+export const SPREAD_SCALE = 2 ** -23;
+
+function random(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** The state with every continuous input (body origins, centers, rotations, velocities, forces and
+ * torques, joint impulses, contacts' normal, friction, twist and rolling impulses) perturbed by
+ * relative amounts of up to 2^-23 from `seed`. Ids, colors, feature ids, caches, fat AABBs and the
+ * pool are discrete or broadphase state and stay as they are. */
+export function perturb(state: StepState, seed: number): StepState {
+  const next = random(seed);
+  const p = (x: number) => Math.fround(x * (1 + (2 * next() - 1) * SPREAD_SCALE));
+  const v = (xs: readonly number[]) => xs.map(p);
+  return {
+    ...state,
+    bodies: state.bodies.map((b) => ({ origin: v(b.origin) as Vec3, center: v(b.center) as Vec3, rotation: v(b.rotation) as Quat, linearVelocity: v(b.linearVelocity) as Vec3, angularVelocity: v(b.angularVelocity) as Vec3, force: v(b.force ?? [0, 0, 0]) as Vec3, torque: v(b.torque ?? [0, 0, 0]) as Vec3 })),
+    joints: state.joints.map(v),
+    contacts: state.contacts.map((c) => ({ ...c, points: c.points.map((q) => ({ featureId: q.featureId, normalImpulse: p(q.normalImpulse) })), frictionImpulse: v(c.frictionImpulse) as Vec3, twistImpulse: p(c.twistImpulse), rollingImpulse: v(c.rollingImpulse) as Vec3 })),
+  };
+}
+
+/** A result's continuous values by key: `bodies.<i>.<field>.<k>`, `joints.<i>.impulses.<k>`,
+ * `fatAabbs.<s>.<lower|upper>.<k>` and `contacts.<id>.manifold...` for a touching contact. */
+export function continuousValues(result: StepResult): Map<string, number> {
+  const values = new Map<string, number>();
+  const put = (key: string, xs: readonly number[]) => xs.forEach((x, k) => values.set(`${key}.${k}`, x));
+  result.bodies.forEach((b, i) => {
+    for (const field of ["origin", "center", "rotation", "linearVelocity", "angularVelocity"] as const) put(`bodies.${i}.${field}`, b[field]);
+  });
+  result.joints.forEach((j, i) => put(`joints.${i}.impulses`, j.impulses));
+  result.fatAabbs.forEach((a, s) => { put(`fatAabbs.${s}.lower`, a.lower); put(`fatAabbs.${s}.upper`, a.upper); });
+  for (const c of result.contacts) {
+    const m = c.manifold;
+    if (!m) continue;
+    const key = `contacts.${c.id}.manifold`;
+    put(`${key}.normal`, m.normal);
+    m.points.forEach((q, k) => {
+      put(`${key}.points.${k}.anchorA`, q.anchorA);
+      put(`${key}.points.${k}.anchorB`, q.anchorB);
+      for (const field of ["separation", "normalImpulse", "totalNormalImpulse"] as const) values.set(`${key}.points.${k}.${field}`, q[field]);
+    });
+    put(`${key}.frictionImpulse`, m.frictionImpulse);
+    put(`${key}.rollingImpulse`, m.rollingImpulse);
+    for (const field of ["twistImpulse", "friction", "restitution", "rollingResistance"] as const) values.set(`${key}.${field}`, m[field]);
+  }
+  return values;
+}
+
+/** Upstream's discrete outcome, which a perturbation within rounding should not change. */
+const discrete = (r: StepResult) => JSON.stringify([r.contacts.map((c) => [c.id, c.shapeA, c.shapeB, c.touching, c.color, c.manifold?.points.map((q) => q.featureId)]), r.pool, r.joints.map((j) => j.color)]);
+
 export interface StepOracle {
   /** Box3D's mass properties for every body, from the scene's shapes. */
   mass: StepMass[];
   /** The scene as built, before any step. */
   initial: StepResult;
   step(state: StepState): Promise<StepResult>;
+  /** The step and its spread: per continuous value, the largest change over the SPREAD_DIRECTIONS
+   * perturbed runs whose discrete outcome equals the step's, and how many runs' did not. */
+  stepWithSpread(state: StepState): Promise<{ result: StepResult; spread: Map<string, number>; discreteChanges: number }>;
   /** The scene stepped without reloading, each step's result: what a complete load must reproduce. */
   rollout(steps: number): Promise<StepResult[]>;
   /** One decision hook on supplied operands, as `decide <kind> ...` reads them (adapter/step.c): the
@@ -334,6 +401,25 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
     mass,
     initial,
     step: (state) => exchange(encodeState(scene, state), async () => decodeResult(await until("end"))),
+    async stepWithSpread(state) {
+      const run = (s: StepState) => exchange(encodeState(scene, s), async () => decodeResult(await until("end")));
+      const result = await run(state);
+      const base = continuousValues(result);
+      const spread = new Map<string, number>();
+      let discreteChanges = 0;
+      for (let seed = 1; seed <= SPREAD_DIRECTIONS; seed++) {
+        const other = await run(perturb(state, seed));
+        if (discrete(other) !== discrete(result)) {
+          discreteChanges++;
+          continue;
+        }
+        for (const [key, x] of continuousValues(other)) {
+          const b = base.get(key);
+          if (b !== undefined) spread.set(key, Math.max(spread.get(key) ?? 0, Math.abs(x - b)));
+        }
+      }
+      return { result, spread, discreteChanges };
+    },
     decide: (kind, operands, flip = false) =>
       exchange(`decide ${kind} ${kind === "separation" ? vec(operands) : `${operands[0]} ${vec(operands.slice(1))}`} ${flip ? 1 : 0}\n`, async () => {
         const lines = await until("end");

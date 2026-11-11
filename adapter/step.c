@@ -295,9 +295,11 @@ static b3BodyId bodyIds[MAX_ITEMS];
 // bound with the entity it belongs to, and takes the other side for an entity listed in `flip`. A
 // decision within ten bounds but outside one is reported as near, for tests of the bound.
 enum { KIND_SEGMENT, KIND_SEPARATION, KIND_REVOLUTE_LOWER, KIND_REVOLUTE_UPPER, KIND_TWIST_LOWER, KIND_TWIST_UPPER,
-	   KIND_CONE, KIND_PRISMATIC_LOWER, KIND_PRISMATIC_UPPER, KIND_COUNT };
+	   KIND_CONE, KIND_PRISMATIC_LOWER, KIND_PRISMATIC_UPPER, KIND_PRISMATIC_LOWER_SPECULATIVE,
+	   KIND_PRISMATIC_UPPER_SPECULATIVE, KIND_COUNT };
 static const char* kindNames[KIND_COUNT] = { "segment", "separation", "revolute-lower", "revolute-upper", "twist-lower",
-											 "twist-upper", "cone", "prismatic-lower", "prismatic-upper" };
+											 "twist-upper", "cone", "prismatic-lower", "prismatic-upper",
+											 "prismatic-lower-speculative", "prismatic-upper-speculative" };
 typedef struct Decision
 {
 	int kind, id;
@@ -430,19 +432,26 @@ static float limitDecision(int jointId, int limit, bool useBias, float c, float 
 }
 
 // A prismatic limit's C from translation = dot(d, axis), d = ((dcB - dcA) + deltaCenter) + (rB - rA),
-// rX = b3RotateVector(dqX, frameX.p), axis = b3RotateVector(dqA, localAxis).
-static float translationDecision(int jointId, int limit, bool useBias, float C, float limitValue, b3Vec3 dcA, b3Vec3 dcB,
+// rX = b3RotateVector(dqX, frameX.p), axis = b3RotateVector(dqA, localAxis). Two tests read it:
+// C < speculativeDistance, which skips the limit (and zeroes its impulse) beyond it, and C > 0.
+static float translationDecision(int jointId, int limit, bool useBias, float C, float limitValue, float speculativeDistance, b3Vec3 dcA, b3Vec3 dcB,
 								 b3Vec3 deltaCenter, b3Vec3 rA, b3Vec3 rB, b3Vec3 frameA, b3Vec3 frameB, b3Quat dqA,
 								 b3Quat dqB, b3Vec3 localAxis, b3Vec3 axis, b3Vec3 d)
 {
-	if (!useBias) return C;
 	V ed = vadd(vscale(gam(3), vadd(vadd(vadd(vabs(dcA), vabs(dcB)), vabs(deltaCenter)), vadd(vabs(rA), vabs(rB)))),
 				vadd(rotateError(dqA, frameA), rotateError(dqB, frameB)));
 	V ea = rotateError(dqA, localAxis);
 	double translation = d.x * axis.x + d.y * axis.y + d.z * axis.z;
 	double bound = gam(3) * vdot(vabs(d), vabs(axis)) + vdot(ed, vabs(axis)) + vdot(vabs(d), ea) + gam(1) * (fabs(translation) + fabs(limitValue));
+	bool flip = listed(flipJoints, flipJointCount, jointId);
+	// speculativeDistance = 0.25 * (upper - lower) rounds twice from the limits.
+	int speculative = limit == 5 ? KIND_PRISMATIC_LOWER_SPECULATIVE : KIND_PRISMATIC_UPPER_SPECULATIVE;
+	if (decide(speculative, jointId, C, speculativeDistance, bound + gam(2) * fabs(speculativeDistance), flip))
+		return C < speculativeDistance ? speculativeDistance : nextafterf(speculativeDistance, -INFINITY);
+	// Without bias both sides of C > 0 meet at C = 0.
+	if (!useBias) return C;
 	int kind = limit == 5 ? KIND_PRISMATIC_LOWER : KIND_PRISMATIC_UPPER;
-	if (!decide(kind, jointId, C, 0.0, bound, listed(flipJoints, flipJointCount, jointId))) return C;
+	if (!decide(kind, jointId, C, 0.0, bound, flip)) return C;
 	return C > 0.0f ? -0.0f : FLT_TRUE_MIN;
 }
 
@@ -916,7 +925,7 @@ static void segment(void)
 // decide kind operands... flip: one decision hook on supplied operands, for tests of its bound.
 //   separation s n dpA dpB dqA dqB rA rB nA nB normalSeparation baseSeparation
 //   limit index(0-4) c limitValue dqA dqB frameA frameB relQ
-//   translation index(5-6) C limitValue dcA dcB deltaCenter rA rB frameA frameB dqA dqB localAxis axis d
+//   translation index(5-6) C limitValue speculativeDistance dcA dcB deltaCenter rA rB frameA frameB dqA dqB localAxis axis d
 static void decideCommand(void)
 {
 	next();
@@ -951,13 +960,13 @@ static void decideCommand(void)
 	else if (strcmp(kind, "translation") == 0)
 	{
 		int index = readInt();
-		float c = readFloat(), limitValue = readFloat();
+		float c = readFloat(), limitValue = readFloat(), speculativeDistance = readFloat();
 		b3Vec3 dca = readVec3(), dcb = readVec3(), dc = readVec3(), ra = readVec3(), rb = readVec3(), fa = readVec3(), fb = readVec3();
 		b3Quat qa = readQuat(), qb = readQuat();
 		b3Vec3 local = readVec3(), axis = readVec3(), d = readVec3();
 		flipJointCount = readInt() != 0 ? 1 : 0;
 		flipJoints[0] = -1;
-		result = translationDecision(-1, index, true, c, limitValue, dca, dcb, dc, ra, rb, fa, fb, qa, qb, local, axis, d);
+		result = translationDecision(-1, index, true, c, limitValue, speculativeDistance, dca, dcb, dc, ra, rb, fa, fb, qa, qb, local, axis, d);
 	}
 	else fail("decide kind is separation, limit or translation");
 	flipContactCount = flipJointCount = 0;

@@ -152,7 +152,7 @@ export const PATCHES: OraclePatch[] = [
     marker: `step.prismatic.${name}`,
     optional: true,
     anchor: `\t\t\t${line}\n`,
-    addition: `\t\t\t${line}\n${STEP}\t\t\tif ( b3OracleTranslationDecision != NULL )\n\t\t\t{\n\t\t\t\tC = b3OracleTranslationDecision( base->jointId, ${code}, useBias, C, ${limit}, stateA->deltaPosition, stateB->deltaPosition, joint->deltaCenter, rA, rB, joint->frameA.p, joint->frameB.p, stateA->deltaRotation, stateB->deltaRotation, joint->jointAxis, jointAxis, d );\n\t\t\t}\n#endif\n`,
+    addition: `\t\t\t${line}\n${STEP}\t\t\tif ( b3OracleTranslationDecision != NULL )\n\t\t\t{\n\t\t\t\tC = b3OracleTranslationDecision( base->jointId, ${code}, useBias, C, ${limit}, speculativeDistance, stateA->deltaPosition, stateB->deltaPosition, joint->deltaCenter, rA, rB, joint->frameA.p, joint->frameB.p, stateA->deltaRotation, stateB->deltaRotation, joint->jointAxis, jointAxis, d );\n\t\t\t}\n#endif\n`,
   })) as OraclePatch[],
   {
     file: "src/solver.c",
