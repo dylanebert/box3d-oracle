@@ -251,8 +251,9 @@ test("a spread perturbs every continuous input by at most 2^-23 and measures ups
   expect(after.every((x, i) => Math.abs(x - before[i]) <= 2 * SPREAD_SCALE * Math.abs(before[i]))).toBe(true);
   expect(after.some((x, i) => x !== before[i])).toBe(true);
   expect(a.contacts.map((x) => [x.id, x.color, x.points.map((p) => p.featureId), x.cache])).toEqual(state.contacts.map((x) => [x.id, x.color, x.points.map((p) => p.featureId), x.cache]));
-  const { result, spread } = await oracle.stepWithSpread(state);
+  const { result, spread, spreadAll } = await oracle.stepWithSpread(state);
   expect(result).toEqual(await oracle.step(state));
+  for (const [key, value] of spread) expect(spreadAll.get(key)!).toBeGreaterThanOrEqual(value);
   expect(spread.get("bodies.0.center.1")).toBe(0);
   expect(Math.max(...[0, 1, 2].map((k) => spread.get(`bodies.3.linearVelocity.${k}`)!))).toBeGreaterThan(0);
 }, 60_000);
@@ -267,6 +268,7 @@ test("decisions unstable by their spread are reported and flip within their wind
     const { result, unstable } = await oracle.stepWithSpread(state);
     expect(result.decisions.length).toBeGreaterThan(0);
     for (const ill of result.illConditioned) expect(unstable.some((u) => u.kind === ill.kind && u.id === ill.id)).toBe(true);
+    for (const u of unstable) expect(u.otherSideRuns).toBeLessThanOrEqual(8);
     const spreadOnly = unstable.find((u) => u.window > u.bound);
     if (!spreadOnly) continue;
     const flipped = await oracle.step({ ...state, flip: [entityOf(spreadOnly)] });

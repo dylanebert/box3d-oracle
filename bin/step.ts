@@ -342,10 +342,11 @@ const discrete = (r: StepResult) => JSON.stringify([r.contacts.map((c) => [c.id,
 
 /** A decision ill-conditioned at this state: SPREAD_FACTOR times the spread of its margin over the
  * perturbed runs, or its local bound, reaches its threshold. `window` is the larger of the two. */
-export interface Unstable { kind: DecisionKind; id: number; margin: number; bound: number; spread: number; window: number }
+export interface Unstable { kind: DecisionKind; id: number; margin: number; bound: number; spread: number; window: number; otherSideRuns: number }
 /** The factor on a spread, fixed with SPREAD_DIRECTIONS before any port was held to it. */
 export const SPREAD_FACTOR = 10;
-export interface Spread { result: StepResult; spread: Map<string, number>; discreteChanges: number; unstable: Unstable[] }
+/** `spreadAll` is the spread over every perturbed run, those whose discrete outcome changed included. */
+export interface Spread { result: StepResult; spread: Map<string, number>; spreadAll: Map<string, number>; discreteChanges: number; unstable: Unstable[] }
 
 export interface StepOracle {
   /** Box3D's mass properties for every body, from the scene's shapes. */
@@ -354,8 +355,9 @@ export interface StepOracle {
   initial: StepResult;
   step(state: StepState): Promise<StepResult>;
   /** The step and its spread: per continuous value, the largest change over the SPREAD_DIRECTIONS
-   * perturbed runs whose discrete outcome equals the step's, how many runs' did not, and the hooked
-   * decisions that are ill-conditioned by their own margin's spread or local bound. */
+   * perturbed runs whose discrete outcome equals the step's (and over all of them, `spreadAll`), how many
+   * runs' did not, and the hooked decisions ill-conditioned by their own margin's spread or local bound,
+   * with how many runs took their other side. */
   stepWithSpread(state: StepState): Promise<Spread>;
   /** The scene stepped without reloading, each step's result: what a complete load must reproduce. */
   rollout(steps: number): Promise<StepResult[]>;
@@ -422,13 +424,20 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
       const base = continuousValues(result);
       const spread = new Map<string, number>();
       const key = (d: Decision) => `${d.kind} ${d.id}`;
-      const margins = new Map(result.decisions.map((d) => [key(d), { decision: d, margin: d.quantity - d.threshold, spread: 0 }]));
+      const margins = new Map(result.decisions.map((d) => [key(d), { decision: d, margin: d.quantity - d.threshold, spread: 0, otherSideRuns: 0 }]));
+      const spreadAll = new Map<string, number>();
       let discreteChanges = 0;
       for (let seed = 1; seed <= SPREAD_DIRECTIONS; seed++) {
         const other = await run(perturb(state, seed));
         for (const d of other.decisions) {
           const m = margins.get(key(d));
-          if (m) m.spread = Math.max(m.spread, Math.abs(d.quantity - d.threshold - m.margin));
+          if (!m) continue;
+          m.spread = Math.max(m.spread, Math.abs(d.quantity - d.threshold - m.margin));
+          if (d.quantity - d.threshold > 0 !== m.margin > 0) m.otherSideRuns++;
+        }
+        for (const [key, x] of continuousValues(other)) {
+          const b = base.get(key);
+          if (b !== undefined) spreadAll.set(key, Math.max(spreadAll.get(key) ?? 0, Math.abs(x - b)));
         }
         if (discrete(other) !== discrete(result)) {
           discreteChanges++;
@@ -440,11 +449,11 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
         }
       }
       const unstable: Unstable[] = [];
-      for (const { decision, margin, spread: s } of margins.values()) {
+      for (const { decision, margin, spread: s, otherSideRuns } of margins.values()) {
         const window = Math.max(decision.bound, SPREAD_FACTOR * s);
-        if (Math.abs(margin) <= window) unstable.push({ kind: decision.kind, id: decision.id, margin, bound: decision.bound, spread: s, window });
+        if (Math.abs(margin) <= window) unstable.push({ kind: decision.kind, id: decision.id, margin, bound: decision.bound, spread: s, window, otherSideRuns });
       }
-      return { result, spread, discreteChanges, unstable };
+      return { result, spread, spreadAll, discreteChanges, unstable };
     },
     decide: (kind, operands, flip = false) =>
       exchange(`decide ${kind} ${kind === "separation" || kind === "rolling" ? vec(operands) : `${operands[0]} ${vec(operands.slice(1))}`} ${flip ? 1 : 0}\n`, async () => {
