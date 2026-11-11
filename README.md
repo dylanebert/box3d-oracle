@@ -59,6 +59,8 @@ A stage hook localizes a red within a step: a state's `stop` names a substep, a 
 
 `stepWithSpread(state)` gives the continuous tolerance a port is held to at that state, by backward error analysis: a backward-stable step is the exact step of an input perturbed by about an ulp, so it reruns upstream's step with every continuous input scaled by `1 + u 2^-23` (u uniform in [-1, 1), independent per value) in 8 seeded directions (`SPREAD_DIRECTIONS`), and reports per continuous value the largest change, counting runs whose discrete outcome changed instead.
 
+Every hooked decision also reports its closest approach to its threshold per kind and entity (`decisions`). `stepWithSpread` measures each one's margin over the perturbed runs: a decision is `unstable` when `SPREAD_FACTOR` (10) times that spread, or its local bound, reaches its threshold, and flipping its entity with that `window` takes the other side of its decisions within it.
+
 `test/step.test.ts` holds the load complete and live: a chain of loaded steps equals an uninterrupted upstream rollout bit for bit over 240 steps whose contacts begin, touch between dynamic and static bodies, stop and are destroyed with ids reused, and changing any loaded field changes what upstream computes from it; a cold convex cache changes the simplex upstream's GJK ends on, which the next step reads.
 
 ## Local Checks

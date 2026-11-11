@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { nextState, OVERFLOW_COLOR, openStepOracle, perturb, SPREAD_SCALE, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
+import { entityOf, nextState, OVERFLOW_COLOR, openStepOracle, perturb, SPREAD_SCALE, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
 
 // The pinned official Box3D the step lane is held at; building it fetches official main once into the cache.
 const SHA = "336263320469e5e9febfe18697ab562488f7e97a";
@@ -256,3 +256,22 @@ test("a spread perturbs every continuous input by at most 2^-23 and measures ups
   expect(spread.get("bodies.0.center.1")).toBe(0);
   expect(Math.max(...[0, 1, 2].map((k) => spread.get(`bodies.3.linearVelocity.${k}`)!))).toBeGreaterThan(0);
 }, 60_000);
+
+// Sentinel: every hooked decision reports its closest approach, a decision is unstable when ten times
+// its margin's spread over the perturbed runs (or its local bound) reaches its threshold, and a flip
+// with that window changes upstream's step.
+test("decisions unstable by their spread are reported and flip within their window", async () => {
+  let checked = 0;
+  for (let k = 1; k < STEPS && checked < 3; k++) {
+    const state = nextState(native[k - 1]);
+    const { result, unstable } = await oracle.stepWithSpread(state);
+    expect(result.decisions.length).toBeGreaterThan(0);
+    for (const ill of result.illConditioned) expect(unstable.some((u) => u.kind === ill.kind && u.id === ill.id)).toBe(true);
+    const spreadOnly = unstable.find((u) => u.window > u.bound);
+    if (!spreadOnly) continue;
+    const flipped = await oracle.step({ ...state, flip: [entityOf(spreadOnly)] });
+    expect(JSON.stringify(flipped.bodies)).not.toEqual(JSON.stringify(result.bodies));
+    checked++;
+  }
+  expect(checked).toBeGreaterThan(0);
+}, 120_000);

@@ -310,6 +310,7 @@ static Decision decisions[4 * MAX_ITEMS];
 static int decisionCount;
 static int flipContacts[MAX_ITEMS], flipContactCount;
 static int flipJoints[MAX_ITEMS], flipJointCount;
+static double flipContactWindows[MAX_ITEMS], flipJointWindows[MAX_ITEMS];
 
 static const double unit = 0x1p-24;
 static double gam(int n) { return n * unit / (1.0 - n * unit); }
@@ -318,27 +319,51 @@ static float ulp(float x)
 	x = fabsf(x);
 	return nextafterf(x, INFINITY) - x;
 }
-static bool listed(const int* ids, int count, int id)
+// A flipped entity's window: its decisions within max(local bound, window) of their threshold take the
+// other side. Negative when the entity is not flipped.
+static double windowOf(const int* ids, const double* windows, int count, int id)
 {
 	for (int k = 0; k < count; ++k)
-		if (ids[k] == id) return true;
-	return false;
+		if (ids[k] == id) return windows[k];
+	return -1.0;
 }
-// Reports the decision if within its bound (or ten of them, as near); returns whether to flip it.
-static bool decide(int kind, int id, double quantity, double threshold, double bound, bool flipped)
+// Every hooked decision's closest approach to its threshold this step, per kind and entity: the
+// deciding quantity and threshold there and its local bound, for a spread over perturbed runs.
+typedef struct Approach
 {
+	int kind, id;
+	double quantity, threshold, bound;
+} Approach;
+static Approach approaches[4 * MAX_ITEMS];
+static int approachCount;
+static void approach(int kind, int id, double quantity, double threshold, double bound)
+{
+	for (int k = 0; k < approachCount; ++k)
+	{
+		Approach* a = approaches + k;
+		if (a->kind != kind || a->id != id) continue;
+		if (fabs(quantity - threshold) < fabs(a->quantity - a->threshold)) *a = (Approach){ kind, id, quantity, threshold, bound };
+		return;
+	}
+	if (approachCount < 4 * MAX_ITEMS) approaches[approachCount++] = (Approach){ kind, id, quantity, threshold, bound };
+}
+// Records the decision (and reports it if within its bound, or ten of them as near); returns whether to flip it.
+static bool decide(int kind, int id, double quantity, double threshold, double bound, double window)
+{
+	approach(kind, id, quantity, threshold, bound);
 	double margin = fabs(quantity - threshold);
-	if (margin > 10.0 * bound) return false;
+	bool flip = window >= 0.0 && margin <= fmax(bound, window);
+	if (margin > 10.0 * bound) return flip;
 	bool ill = margin <= bound;
 	if (decisionCount < 4 * MAX_ITEMS) decisions[decisionCount++] = (Decision){ kind, id, (float)quantity, (float)bound, quantity > threshold, !ill };
-	return ill && flipped;
+	return flip;
 }
 
 // b3SegmentDistance's denom = a*e - b*b > threshold. A contraction rounds one product fewer, moving
 // denom by at most half an ulp of either product; ulp(a*e) + ulp(b*b) bounds that.
 static bool segmentDecision(float ae, float bb, float denom, float threshold)
 {
-	return decide(KIND_SEGMENT, b3OracleContactId, denom, threshold, ulp(ae) + ulp(bb), listed(flipContacts, flipContactCount, b3OracleContactId));
+	return decide(KIND_SEGMENT, b3OracleContactId, denom, threshold, ulp(ae) + ulp(bb), windowOf(flipContacts, flipContactWindows, flipContactCount, b3OracleContactId));
 }
 
 typedef struct V { double x, y, z; } V;
@@ -384,7 +409,7 @@ static void separationDecision(b3Contact* const* contacts, int width, const void
 		double dA = fabs(na.x * ra.x + na.y * ra.y + na.z * ra.z), dB = fabs(nb.x * rb.x + nb.y * rb.y + nb.z * rb.z);
 		double bound = errNormal + errA + errB + gam(3) * (fabs(NS[lane]) + dA + dB + fabs(BS[lane]));
 		int id = contacts[lane]->contactId;
-		if (decide(KIND_SEPARATION, id, S[lane], 0.0, bound, listed(flipContacts, flipContactCount, id)))
+		if (decide(KIND_SEPARATION, id, S[lane], 0.0, bound, windowOf(flipContacts, flipContactWindows, flipContactCount, id)))
 			mask[lane] = mask[lane] != 0.0f ? 0.0f : 1.0f;
 	}
 }
@@ -421,7 +446,7 @@ static void rollingDecision(b3Contact* const* contacts, int width, const void* l
 		double threshold = FLT_EPSILON + cap * cap;
 		double bound = lengthError + gam(3) * threshold;
 		int id = contacts[lane]->contactId;
-		if (decide(KIND_ROLLING, id, L[lane], threshold, bound, listed(flipContacts, flipContactCount, id)))
+		if (decide(KIND_ROLLING, id, L[lane], threshold, bound, windowOf(flipContacts, flipContactWindows, flipContactCount, id)))
 			K[lane] = K[lane] != 0.0f ? 0.0f : 1.0f;
 	}
 }
@@ -463,7 +488,7 @@ static float limitDecision(int jointId, int limit, bool useBias, float c, float 
 	}
 	double bound = errAngle + gam(12) * fabs(angle) + gam(1) * (fabs(angle) + fabs(limitValue));
 	int kind = (int[]){ KIND_REVOLUTE_LOWER, KIND_REVOLUTE_UPPER, KIND_TWIST_LOWER, KIND_TWIST_UPPER, KIND_CONE }[limit];
-	if (!decide(kind, jointId, c, 0.0, bound, listed(flipJoints, flipJointCount, jointId))) return c;
+	if (!decide(kind, jointId, c, 0.0, bound, windowOf(flipJoints, flipJointWindows, flipJointCount, jointId))) return c;
 	// The other side, at the threshold.
 	return c > 0.0f ? -0.0f : FLT_TRUE_MIN;
 }
@@ -480,7 +505,7 @@ static float translationDecision(int jointId, int limit, bool useBias, float C, 
 	V ea = rotateError(dqA, localAxis);
 	double translation = d.x * axis.x + d.y * axis.y + d.z * axis.z;
 	double bound = gam(3) * vdot(vabs(d), vabs(axis)) + vdot(ed, vabs(axis)) + vdot(vabs(d), ea) + gam(1) * (fabs(translation) + fabs(limitValue));
-	bool flip = listed(flipJoints, flipJointCount, jointId);
+	double flip = windowOf(flipJoints, flipJointWindows, flipJointCount, jointId);
 	// speculativeDistance = 0.25 * (upper - lower) rounds twice from the limits.
 	int speculative = limit == 5 ? KIND_PRISMATIC_LOWER_SPECULATIVE : KIND_PRISMATIC_UPPER_SPECULATIVE;
 	if (decide(speculative, jointId, C, speculativeDistance, bound + gam(2) * fabs(speculativeDistance), flip))
@@ -504,6 +529,16 @@ static void writeIll(void)
 		fprintf(out, " %d\n", d->side);
 	}
 	decisionCount = 0;
+	for (int k = 0; k < approachCount; ++k)
+	{
+		Approach* a = approaches + k;
+		fprintf(out, "decision %s %d", kindNames[a->kind], a->id);
+		putFloat((float)a->quantity);
+		putFloat((float)a->threshold);
+		putFloat((float)a->bound);
+		fprintf(out, "\n");
+	}
+	approachCount = 0;
 }
 
 // The scene in creation order, so body, shape and joint ids are scene indices and joint colors are
@@ -767,7 +802,7 @@ static void stageHook(int type, int color, b3StepContext* context)
 // pool nextIndex freeCount free...
 // contacts count, then per contact: id shapeA shapeB touching color pointCount
 //   (featureId normalImpulse) per point, frictionImpulse(3) twistImpulse rollingImpulse(3) cache words
-// flip count (contact|joint id)... (entities that take the other side of their ill-conditioned decisions)
+// flip count (contact|joint id window)... (entities whose decisions within max(bound, window) take the other side)
 // stop substep stageType color (substep -1 for none; see stageHook)
 static void loadAndStep(void)
 {
@@ -894,8 +929,17 @@ static void loadAndStep(void)
 		bool joint = strcmp(token, "joint") == 0;
 		if (!joint && strcmp(token, "contact") != 0) fail("flip entity is contact or joint");
 		int id = readInt();
-		if (joint) flipJoints[flipJointCount++] = id;
-		else flipContacts[flipContactCount++] = id;
+		double window = readFloat();
+		if (joint)
+		{
+			flipJointWindows[flipJointCount] = window;
+			flipJoints[flipJointCount++] = id;
+		}
+		else
+		{
+			flipContactWindows[flipContactCount] = window;
+			flipContacts[flipContactCount++] = id;
+		}
 	}
 	expect("stop");
 	stopSubstep = readInt();
@@ -903,7 +947,7 @@ static void loadAndStep(void)
 	stopColor = readInt();
 	expect("end");
 
-	decisionCount = 0;
+	decisionCount = approachCount = 0;
 	substep = 0;
 	stageWorld = world;
 	b3World_Step(worldId, scene.timeStep, scene.subStepCount);
@@ -947,6 +991,7 @@ static void segment(void)
 {
 	flipContactCount = readInt() != 0 ? 1 : 0;
 	flipContacts[0] = -1;
+		flipContactWindows[0] = 0.0;
 	b3Vec3 p1 = readVec3(), q1 = readVec3(), p2 = readVec3(), q2 = readVec3();
 	b3OracleContactId = -1;
 	b3SegmentDistanceResult result = b3SegmentDistance(p1, q1, p2, q2);
@@ -979,6 +1024,7 @@ static void decideCommand(void)
 		float ns = readFloat(), base = readFloat(), mass = 1.0f;
 		flipContactCount = readInt() != 0 ? 1 : 0;
 		flipContacts[0] = -1;
+		flipContactWindows[0] = 0.0;
 		static b3Contact probe;
 		probe.contactId = -1;
 		b3Contact* lanes[1] = { &probe };
@@ -992,6 +1038,7 @@ static void decideCommand(void)
 		for (int k = 0; k < 20; ++k) values[k] = readFloat();
 		flipContactCount = readInt() != 0 ? 1 : 0;
 		flipContacts[0] = -1;
+		flipContactWindows[0] = 0.0;
 		static b3Contact probe;
 		probe.contactId = -1;
 		b3Contact* lanes[1] = { &probe };
@@ -1006,6 +1053,7 @@ static void decideCommand(void)
 		b3Quat qa = readQuat(), qb = readQuat(), fa = readQuat(), fb = readQuat(), rel = readQuat();
 		flipJointCount = readInt() != 0 ? 1 : 0;
 		flipJoints[0] = -1;
+		flipJointWindows[0] = 0.0;
 		result = limitDecision(-1, index, true, c, limitValue, qa, qb, fa, fb, rel);
 	}
 	else if (strcmp(kind, "translation") == 0)
@@ -1017,6 +1065,7 @@ static void decideCommand(void)
 		b3Vec3 local = readVec3(), axis = readVec3(), d = readVec3();
 		flipJointCount = readInt() != 0 ? 1 : 0;
 		flipJoints[0] = -1;
+		flipJointWindows[0] = 0.0;
 		result = translationDecision(-1, index, true, c, limitValue, speculativeDistance, dca, dcb, dc, ra, rb, fa, fb, qa, qb, local, axis, d);
 	}
 	else fail("decide kind is separation, limit or translation");

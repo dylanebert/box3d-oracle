@@ -102,7 +102,10 @@ export const SOLVER_STAGES = { velocities: 3, warm: 4, solve: 5, positions: 6, r
 export type SolverStage = keyof typeof SOLVER_STAGES;
 export interface StageBody { linearVelocity: Vec3; angularVelocity: Vec3; deltaPosition: Vec3; deltaRotation: Quat }
 
-export interface Entity { entity: "contact" | "joint"; id: number }
+/** A flipped entity's decisions within max(local bound, `window`) of their threshold take the other side. */
+export interface Entity { entity: "contact" | "joint"; id: number; window?: number }
+/** A hooked decision's closest approach to its threshold in a step, per kind and entity. */
+export interface Decision { kind: DecisionKind; id: number; quantity: number; threshold: number; bound: number }
 /** The discrete tests the step lane bounds: b3SegmentDistance's parallel test, contact push's
  * speculative switch on separation, joint limits' speculative switch, and a prismatic limit's
  * speculative distance, beyond which it is not solved, and contact relax's rolling resistance clamp. */
@@ -111,7 +114,7 @@ export type DecisionKind = "segment" | "separation" | "revolute-lower" | "revolu
  * the site's operands) of the threshold, where a port's legal rounding may land on either side.
  * `id` is a contact's for segment and separation, else a joint's; `side` is upstream's. */
 export interface IllConditioned { kind: DecisionKind; id: number; quantity: number; bound: number; side: boolean }
-export const entityOf = (d: IllConditioned): Entity => ({ entity: d.kind === "segment" || d.kind === "separation" || d.kind === "rolling" ? "contact" : "joint", id: d.id });
+export const entityOf = (d: { kind: DecisionKind; id: number; window?: number }): Entity => ({ entity: d.kind === "segment" || d.kind === "separation" || d.kind === "rolling" ? "contact" : "joint", id: d.id, window: d.window });
 
 export interface StepManifoldPoint { featureId: number; anchorA: Vec3; anchorB: Vec3; separation: number; normalImpulse: number; totalNormalImpulse: number }
 export interface StepResultContact {
@@ -133,6 +136,8 @@ export interface StepResult {
   illConditioned: IllConditioned[];
   /** Decisions within ten bounds of their threshold but outside one, for tests of the bounds. */
   near: IllConditioned[];
+  /** Every hooked decision's closest approach to its threshold. */
+  decisions: Decision[];
   /** With `stop`: awake bodies' state (null for others) and joints' impulses after that stage. */
   stage?: { bodies: (StageBody | null)[]; joints: number[][] };
 }
@@ -200,7 +205,7 @@ export function encodeState(scene: StepScene, state: StepState): string {
     lines.push(`${c.id} ${c.shapeA} ${c.shapeB} ${c.touching ? 1 : 0} ${c.color} ${c.points.length} ${points} ${vec(c.frictionImpulse)} ${f(c.twistImpulse)} ${vec(c.rollingImpulse)} ${cache}`.replace(/ +/g, " "));
   }
   const flip = state.flip ?? [];
-  lines.push(`flip ${flip.length} ${flip.map((e) => `${e.entity} ${e.id}`).join(" ")}`.trimEnd());
+  lines.push(`flip ${flip.length} ${flip.map((e) => `${e.entity} ${e.id} ${f(e.window ?? 0)}`).join(" ")}`.trimEnd());
   lines.push(state.stop ? `stop ${state.stop.substep} ${SOLVER_STAGES[state.stop.stage]} ${state.stop.color ?? -1}` : "stop -1 0 -1");
   lines.push("end");
   return `${lines.join("\n")}\n`;
@@ -208,7 +213,7 @@ export function encodeState(scene: StepScene, state: StepState): string {
 
 /** Parses one response, the lines between a step request and `end`. */
 export function decodeResult(lines: string[]): StepResult {
-  const result: StepResult = { bodies: [], joints: [], fatAabbs: [], pool: { next: 0, free: [] }, contacts: [], illConditioned: [], near: [] };
+  const result: StepResult = { bodies: [], joints: [], fatAabbs: [], pool: { next: 0, free: [] }, contacts: [], illConditioned: [], near: [], decisions: [] };
   for (const line of lines) {
     const [tag, ...words] = line.split(" ");
     let i = 0;
@@ -217,6 +222,7 @@ export function decodeResult(lines: string[]): StepResult {
     const v3 = (): Vec3 => [num(), num(), num()];
     if (tag === "body") result.bodies.push({ origin: v3(), center: v3(), rotation: [num(), num(), num(), num()], linearVelocity: v3(), angularVelocity: v3() });
     else if (tag === "joint") { const color = int(); result.joints.push({ color, impulses: words.slice(1).map(unf) }); }
+    else if (tag === "decision") result.decisions.push({ kind: words[i++] as DecisionKind, id: int(), quantity: num(), threshold: num(), bound: num() });
     else if (tag === "ill" || tag === "near") (tag === "ill" ? result.illConditioned : result.near).push({ kind: words[i++] as DecisionKind, id: int(), quantity: num(), bound: num(), side: int() === 1 });
     else if (tag === "stagebody" || tag === "stagejoint") {
       result.stage ??= { bodies: [], joints: [] };
@@ -242,6 +248,7 @@ export function decodeResult(lines: string[]): StepResult {
   // Upstream visits a color's constraints in an order a rebuilt world need not share.
   const order = (a: IllConditioned, b: IllConditioned) => a.kind.localeCompare(b.kind) || a.id - b.id || a.quantity - b.quantity || a.bound - b.bound;
   result.illConditioned.sort(order);
+  result.decisions.sort((a, b) => a.kind.localeCompare(b.kind) || a.id - b.id);
   result.near.sort(order);
   return result;
 }
@@ -333,6 +340,13 @@ export function continuousValues(result: StepResult): Map<string, number> {
 /** Upstream's discrete outcome, which a perturbation within rounding should not change. */
 const discrete = (r: StepResult) => JSON.stringify([r.contacts.map((c) => [c.id, c.shapeA, c.shapeB, c.touching, c.color, c.manifold?.points.map((q) => q.featureId)]), r.pool, r.joints.map((j) => j.color)]);
 
+/** A decision ill-conditioned at this state: SPREAD_FACTOR times the spread of its margin over the
+ * perturbed runs, or its local bound, reaches its threshold. `window` is the larger of the two. */
+export interface Unstable { kind: DecisionKind; id: number; margin: number; bound: number; spread: number; window: number }
+/** The factor on a spread, fixed with SPREAD_DIRECTIONS before any port was held to it. */
+export const SPREAD_FACTOR = 10;
+export interface Spread { result: StepResult; spread: Map<string, number>; discreteChanges: number; unstable: Unstable[] }
+
 export interface StepOracle {
   /** Box3D's mass properties for every body, from the scene's shapes. */
   mass: StepMass[];
@@ -340,8 +354,9 @@ export interface StepOracle {
   initial: StepResult;
   step(state: StepState): Promise<StepResult>;
   /** The step and its spread: per continuous value, the largest change over the SPREAD_DIRECTIONS
-   * perturbed runs whose discrete outcome equals the step's, and how many runs' did not. */
-  stepWithSpread(state: StepState): Promise<{ result: StepResult; spread: Map<string, number>; discreteChanges: number }>;
+   * perturbed runs whose discrete outcome equals the step's, how many runs' did not, and the hooked
+   * decisions that are ill-conditioned by their own margin's spread or local bound. */
+  stepWithSpread(state: StepState): Promise<Spread>;
   /** The scene stepped without reloading, each step's result: what a complete load must reproduce. */
   rollout(steps: number): Promise<StepResult[]>;
   /** One decision hook on supplied operands, as `decide <kind> ...` reads them (adapter/step.c): the
@@ -406,9 +421,15 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
       const result = await run(state);
       const base = continuousValues(result);
       const spread = new Map<string, number>();
+      const key = (d: Decision) => `${d.kind} ${d.id}`;
+      const margins = new Map(result.decisions.map((d) => [key(d), { decision: d, margin: d.quantity - d.threshold, spread: 0 }]));
       let discreteChanges = 0;
       for (let seed = 1; seed <= SPREAD_DIRECTIONS; seed++) {
         const other = await run(perturb(state, seed));
+        for (const d of other.decisions) {
+          const m = margins.get(key(d));
+          if (m) m.spread = Math.max(m.spread, Math.abs(d.quantity - d.threshold - m.margin));
+        }
         if (discrete(other) !== discrete(result)) {
           discreteChanges++;
           continue;
@@ -418,7 +439,12 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
           if (b !== undefined) spread.set(key, Math.max(spread.get(key) ?? 0, Math.abs(x - b)));
         }
       }
-      return { result, spread, discreteChanges };
+      const unstable: Unstable[] = [];
+      for (const { decision, margin, spread: s } of margins.values()) {
+        const window = Math.max(decision.bound, SPREAD_FACTOR * s);
+        if (Math.abs(margin) <= window) unstable.push({ kind: decision.kind, id: decision.id, margin, bound: decision.bound, spread: s, window });
+      }
+      return { result, spread, discreteChanges, unstable };
     },
     decide: (kind, operands, flip = false) =>
       exchange(`decide ${kind} ${kind === "separation" || kind === "rolling" ? vec(operands) : `${operands[0]} ${vec(operands.slice(1))}`} ${flip ? 1 : 0}\n`, async () => {
