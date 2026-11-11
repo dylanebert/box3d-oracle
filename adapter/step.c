@@ -15,6 +15,7 @@
 #include "box3d/box3d.h"
 #include "box3d/collision.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -282,6 +283,50 @@ static void readScene(void)
 
 static b3BodyId bodyIds[MAX_ITEMS];
 
+// Ill-conditioned decisions: b3SegmentDistance decides whether segments are parallel by
+// denom = a*e - b*b > threshold. A port may contract a*e - b*b into one fused multiply-add, which
+// rounds one product fewer; that moves denom by at most half an ulp of either product, so a denom
+// within ulp(a*e) + ulp(b*b) of the threshold may land on either side. Such a decision is reported
+// per contact, and a contact listed in `flip` takes the other side of it.
+typedef struct IllDecision
+{
+	int contact;
+	float denom, bound;
+	int side;
+} IllDecision;
+static IllDecision ill[MAX_ITEMS];
+static int illCount;
+static int flips[MAX_ITEMS];
+static int flipCount;
+
+static float ulp(float x)
+{
+	x = fabsf(x);
+	return nextafterf(x, INFINITY) - x;
+}
+
+static bool segmentDecision(float ae, float bb, float denom, float threshold)
+{
+	float bound = ulp(ae) + ulp(bb);
+	if (fabs((double)denom - (double)threshold) > (double)bound) return false;
+	if (illCount < MAX_ITEMS) ill[illCount++] = (IllDecision){ b3OracleContactId, denom, bound, denom > threshold };
+	for (int k = 0; k < flipCount; ++k)
+		if (flips[k] == b3OracleContactId) return true;
+	return false;
+}
+
+static void writeIll(void)
+{
+	for (int k = 0; k < illCount; ++k)
+	{
+		printf("ill %d", ill[k].contact);
+		putFloat(ill[k].denom);
+		putFloat(ill[k].bound);
+		printf(" %d\n", ill[k].side);
+	}
+	illCount = 0;
+}
+
 // The scene in creation order, so body, shape and joint ids are scene indices and joint colors are
 // the ones Box3D assigns at creation, before any contact exists.
 static b3WorldId buildWorld(void)
@@ -500,6 +545,7 @@ static void addToColor(b3World* world, b3Contact* contact, int wanted)
 // pool nextIndex freeCount free...
 // contacts count, then per contact: id shapeA shapeB touching color pointCount
 //   (featureId normalImpulse) per point, frictionImpulse(3) twistImpulse rollingImpulse(3) cache words
+// flip count contact... (the contacts that take the other side of an ill-conditioned decision)
 static void loadAndStep(void)
 {
 	b3WorldId worldId = buildWorld();
@@ -615,9 +661,16 @@ static void loadAndStep(void)
 		if (id < 0 || id >= nextIndex || world->contacts.data[id].contactId != B3_NULL_INDEX) fail("free contact id is live or out of range");
 		b3Array_Push(world->contactIdPool.freeArray, id);
 	}
+	expect("flip");
+	flipCount = readInt();
+	if (flipCount < 0 || flipCount > MAX_ITEMS) fail("flip count out of range");
+	for (int k = 0; k < flipCount; ++k) flips[k] = readInt();
 	expect("end");
 
+	illCount = 0;
 	b3World_Step(worldId, scene.timeStep, scene.subStepCount);
+	flipCount = 0;
+	writeIll();
 
 	writeResult(world);
 	printf("end\n");
@@ -634,6 +687,7 @@ static void rollout(void)
 	for (int k = 0; k < steps; ++k)
 	{
 		b3World_Step(worldId, scene.timeStep, scene.subStepCount);
+		writeIll();
 		writeResult(world);
 		printf("end\n");
 	}
@@ -641,8 +695,26 @@ static void rollout(void)
 	b3DestroyWorld(worldId);
 }
 
+// segment flip p1 q1 p2 q2: one b3SegmentDistance, its fractions and any ill-conditioned decision.
+static void segment(void)
+{
+	flipCount = readInt() != 0 ? 1 : 0;
+	flips[0] = -1;
+	b3Vec3 p1 = readVec3(), q1 = readVec3(), p2 = readVec3(), q2 = readVec3();
+	b3OracleContactId = -1;
+	b3SegmentDistanceResult result = b3SegmentDistance(p1, q1, p2, q2);
+	flipCount = 0;
+	writeIll();
+	printf("segment");
+	putFloat(result.fraction1);
+	putFloat(result.fraction2);
+	printf("\nend\n");
+	fflush(stdout);
+}
+
 int main(void)
 {
+	b3OracleSegmentDecision = segmentDecision;
 	readScene();
 	writeMass();
 	printf("ready\n");
@@ -651,7 +723,8 @@ int main(void)
 	{
 		if (strcmp(token, "step") == 0) loadAndStep();
 		else if (strcmp(token, "rollout") == 0) rollout();
-		else fail("step or rollout expected");
+		else if (strcmp(token, "segment") == 0) segment();
+		else fail("step, rollout or segment expected");
 	}
 	return 0;
 }

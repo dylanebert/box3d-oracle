@@ -131,3 +131,42 @@ test("each loaded field changes the step it feeds", async () => {
   const ids = (r: StepResult) => r.contacts.map((c) => c.id);
   expect(ids(await oracle.step(shifted))).not.toEqual(ids(await oracle.step(before)));
 }, 120_000);
+
+const word = (bits: number) => new Float32Array(new Uint32Array([bits]).buffer)[0];
+const ulp32 = (x: number) => {
+  const v = new Float32Array([Math.abs(x)]);
+  const u = new Uint32Array(v.buffer);
+  u[0] += 1;
+  return v[0] - Math.fround(Math.abs(x));
+};
+
+// Sentinel: the hook at b3SegmentDistance's parallel test reports a decision within rounding of its
+// threshold, and the other side it forces is upstream's own arithmetic.
+test("an ill-conditioned segment decision is reported and its other side forced", async () => {
+  // Human.c's torso capsules in the first body's frame at the ragdoll's first step: a*e and b*b
+  // round to the same float, so denom is zero where a contracted a*e - b*b is 2.07e-11.
+  const p1: [number, number, number] = [word(0x3d75c28f), 0, word(0xbd5612c7)];
+  const q1: [number, number, number] = [word(0xbd75c28f), 0, word(0xbd5612c7)];
+  const p2: [number, number, number] = [word(0x3de1479c), word(0xbd9d27a0), word(0xbea1f19a)];
+  const q2: [number, number, number] = [word(0xbde147c0), word(0xbd9d274e), word(0xbea1f19c)];
+  const near = await oracle.segment(p1, q1, p2, q2);
+  expect(near.illConditioned).toEqual([{ contact: -1, denom: 0, bound: expect.any(Number), side: false }]);
+  expect(near.illConditioned[0].bound).toBeGreaterThan(2.07e-11);
+  expect(near.fraction1).toBe(0);
+  const other = await oracle.segment(p1, q1, p2, q2, true);
+  expect(other.fraction1).toBe(1);
+}, 60_000);
+
+test("a decision outside the bound is not reported, and one ten bounds away would be", async () => {
+  const at = (angle: number) => oracle.segment([0, 0, 0], [1, 0, 0], [0, 1, 0], [Math.cos(angle), 1 + Math.sin(angle), 0]);
+  const inside = await at(1e-4);
+  expect(inside.illConditioned.length).toBe(1);
+  // sin^2 of the angle against ulp(a*e) + ulp(b*b), with a = e = 1 and b = cos(angle).
+  const angle = 7e-4;
+  const b = Math.fround(Math.cos(angle));
+  const denom = Math.fround(1 - Math.fround(b * b));
+  const bound = ulp32(1) + ulp32(Math.fround(b * b));
+  expect(denom).toBeGreaterThan(bound);
+  expect(denom).toBeLessThan(10 * bound);
+  expect((await at(angle)).illConditioned).toEqual([]);
+}, 60_000);

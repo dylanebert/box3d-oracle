@@ -73,7 +73,7 @@ export const PATCHES: OraclePatch[] = [
     file: "src/physics_world.c",
     marker: "physics.recycle",
     anchor: '#include "physics_world.h"\n',
-    addition: '#include "physics_world.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\nuint32_t b3OracleRecycleVisits = 0;\n#endif\n',
+    addition: '#include "physics_world.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\nuint32_t b3OracleRecycleVisits = 0;\nint b3OracleContactId = -1;\n#endif\n',
   },
   {
     file: "src/physics_world.c",
@@ -92,6 +92,24 @@ export const PATCHES: OraclePatch[] = [
     marker: "physics.remove-non-touching.bridge",
     anchor: "// Narrow-phase collision\nstatic void b3Collide( b3StepContext* context )\n",
     addition: "#ifdef B3_ORACLE_HOOKS\nvoid b3OracleRemoveNonTouchingContact( b3World* world, int setIndex, int localIndex )\n{\n\tb3RemoveNonTouchingContact( world, setIndex, localIndex );\n}\n#endif\n\n// Narrow-phase collision\nstatic void b3Collide( b3StepContext* context )\n",
+  },
+  {
+    file: "src/physics_world.c",
+    marker: "physics.collide.contact-id",
+    anchor: "\t\t// This updates solid contacts\n",
+    addition: "\t\t// This updates solid contacts\n#ifdef B3_ORACLE_HOOKS\n\t\tb3OracleContactId = contactIndex;\n#endif\n",
+  },
+  {
+    file: "src/math_functions.c",
+    marker: "math.segment-distance.hooks",
+    anchor: '#include "math_internal.h"\n',
+    addition: '#include "math_internal.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\nb3OracleSegmentHook* b3OracleSegmentDecision = NULL;\n#endif\n',
+  },
+  {
+    file: "src/math_functions.c",
+    marker: "math.segment-distance.denom",
+    anchor: "\tfloat s1 = denom > 1000.0f * FLT_MIN ? b3ClampFloat( ( b * f - c * e ) / denom, 0.0f, 1.0f ) : 0.0f;\n",
+    addition: "\tfloat s1 = denom > 1000.0f * FLT_MIN ? b3ClampFloat( ( b * f - c * e ) / denom, 0.0f, 1.0f ) : 0.0f;\n#ifdef B3_ORACLE_HOOKS\n\tif ( b3OracleSegmentDecision != NULL && b3OracleSegmentDecision( a * e, b * b, denom, 1000.0f * FLT_MIN ) )\n\t{\n\t\tfloat ratio = ( b * f - c * e ) / denom;\n\t\ts1 = denom > 1000.0f * FLT_MIN ? 0.0f : ( ratio > 0.0f ? ( ratio < 1.0f ? ratio : 1.0f ) : 0.0f );\n\t}\n#endif\n",
   },
   {
     file: "src/convex_manifold.c",
