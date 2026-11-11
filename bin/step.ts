@@ -90,13 +90,19 @@ export interface StepState {
   fatAabbs: Aabb[];
   pool: { next: number; free: number[] };
   contacts: StepContactState[];
-  /** Contacts that take the other side of an ill-conditioned decision this step. */
-  flip?: number[];
+  /** Contacts and joints that take the other side of their ill-conditioned decisions this step. */
+  flip?: Entity[];
 }
 
-/** A decision upstream computed within `bound` of its threshold, where a port's legal rounding
- * (a contracted a*e - b*b in b3SegmentDistance) may land on either side. `side` is upstream's. */
-export interface IllConditioned { contact: number; denom: number; bound: number; side: boolean }
+export interface Entity { entity: "contact" | "joint"; id: number }
+/** The discrete tests the step lane bounds: b3SegmentDistance's parallel test, contact push's
+ * speculative switch on separation, and joint limits' speculative switch. */
+export type DecisionKind = "segment" | "separation" | "revolute-lower" | "revolute-upper" | "twist-lower" | "twist-upper" | "cone" | "prismatic-lower" | "prismatic-upper";
+/** A decision whose deciding quantity upstream computed within `bound` (its forward error bound from
+ * the site's operands) of the threshold, where a port's legal rounding may land on either side.
+ * `id` is a contact's for segment and separation, else a joint's; `side` is upstream's. */
+export interface IllConditioned { kind: DecisionKind; id: number; quantity: number; bound: number; side: boolean }
+export const entityOf = (d: IllConditioned): Entity => ({ entity: d.kind === "segment" || d.kind === "separation" ? "contact" : "joint", id: d.id });
 
 export interface StepManifoldPoint { featureId: number; anchorA: Vec3; anchorB: Vec3; separation: number; normalImpulse: number; totalNormalImpulse: number }
 export interface StepResultContact {
@@ -116,6 +122,8 @@ export interface StepResult {
   pool: { next: number; free: number[] };
   contacts: StepResultContact[];
   illConditioned: IllConditioned[];
+  /** Decisions within ten bounds of their threshold but outside one, for tests of the bounds. */
+  near: IllConditioned[];
 }
 export interface StepMass { invMass: number; localCenter: Vec3; invInertiaLocal: [Vec3, Vec3, Vec3] }
 
@@ -181,14 +189,14 @@ export function encodeState(scene: StepScene, state: StepState): string {
     lines.push(`${c.id} ${c.shapeA} ${c.shapeB} ${c.touching ? 1 : 0} ${c.color} ${c.points.length} ${points} ${vec(c.frictionImpulse)} ${f(c.twistImpulse)} ${vec(c.rollingImpulse)} ${cache}`.replace(/ +/g, " "));
   }
   const flip = state.flip ?? [];
-  lines.push(`flip ${flip.length} ${flip.join(" ")}`.trimEnd());
+  lines.push(`flip ${flip.length} ${flip.map((e) => `${e.entity} ${e.id}`).join(" ")}`.trimEnd());
   lines.push("end");
   return `${lines.join("\n")}\n`;
 }
 
 /** Parses one response, the lines between a step request and `end`. */
 export function decodeResult(lines: string[]): StepResult {
-  const result: StepResult = { bodies: [], joints: [], fatAabbs: [], pool: { next: 0, free: [] }, contacts: [], illConditioned: [] };
+  const result: StepResult = { bodies: [], joints: [], fatAabbs: [], pool: { next: 0, free: [] }, contacts: [], illConditioned: [], near: [] };
   for (const line of lines) {
     const [tag, ...words] = line.split(" ");
     let i = 0;
@@ -197,7 +205,7 @@ export function decodeResult(lines: string[]): StepResult {
     const v3 = (): Vec3 => [num(), num(), num()];
     if (tag === "body") result.bodies.push({ origin: v3(), center: v3(), rotation: [num(), num(), num(), num()], linearVelocity: v3(), angularVelocity: v3() });
     else if (tag === "joint") { const color = int(); result.joints.push({ color, impulses: words.slice(1).map(unf) }); }
-    else if (tag === "ill") result.illConditioned.push({ contact: int(), denom: num(), bound: num(), side: int() === 1 });
+    else if (tag === "ill" || tag === "near") (tag === "ill" ? result.illConditioned : result.near).push({ kind: words[i++] as DecisionKind, id: int(), quantity: num(), bound: num(), side: int() === 1 });
     else if (tag === "fat") result.fatAabbs.push({ lower: v3(), upper: v3() });
     else if (tag === "pool") { const next = int(); const count = int(); result.pool = { next, free: words.slice(2, 2 + count).map(Number) }; }
     else if (tag === "contact") {
@@ -214,6 +222,10 @@ export function decodeResult(lines: string[]): StepResult {
       result.contacts.push({ id, shapeA, shapeB, touching, color, cache, manifold });
     } else throw new Error(`unexpected step oracle line: ${line}`);
   }
+  // Upstream visits a color's constraints in an order a rebuilt world need not share.
+  const order = (a: IllConditioned, b: IllConditioned) => a.kind.localeCompare(b.kind) || a.id - b.id || a.quantity - b.quantity || a.bound - b.bound;
+  result.illConditioned.sort(order);
+  result.near.sort(order);
   return result;
 }
 
@@ -249,8 +261,11 @@ export interface StepOracle {
   step(state: StepState): Promise<StepResult>;
   /** The scene stepped without reloading, each step's result: what a complete load must reproduce. */
   rollout(steps: number): Promise<StepResult[]>;
+  /** One decision hook on supplied operands, as `decide <kind> ...` reads them (adapter/step.c): the
+   * value the test then sees (a mask lane for separation, c for limits) and its report. */
+  decide(kind: "separation" | "limit" | "translation", operands: number[], flip?: boolean): Promise<{ value: number; illConditioned: IllConditioned[]; near: IllConditioned[] }>;
   /** One upstream b3SegmentDistance, optionally taking the other side of an ill-conditioned decision. */
-  segment(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3, flip?: boolean): Promise<{ fraction1: number; fraction2: number; illConditioned: IllConditioned[] }>;
+  segment(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3, flip?: boolean): Promise<{ fraction1: number; fraction2: number; illConditioned: IllConditioned[]; near: IllConditioned[] }>;
   close(): void;
 }
 
@@ -303,11 +318,18 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
     mass,
     initial,
     step: (state) => exchange(encodeState(scene, state), async () => decodeResult(await until("end"))),
+    decide: (kind, operands, flip = false) =>
+      exchange(`decide ${kind} ${kind === "separation" ? vec(operands) : `${operands[0]} ${vec(operands.slice(1))}`} ${flip ? 1 : 0}\n`, async () => {
+        const lines = await until("end");
+        const decisions = decodeResult(lines.slice(0, -1));
+        return { value: unf(lines.at(-1)!.split(" ")[1]), illConditioned: decisions.illConditioned, near: decisions.near };
+      }),
     segment: (p1, q1, p2, q2, flip = false) =>
       exchange(`segment ${flip ? 1 : 0} ${vec([...p1, ...q1, ...p2, ...q2])}\n`, async () => {
         const lines = await until("end");
         const words = lines.at(-1)!.split(" ");
-        return { fraction1: unf(words[1]), fraction2: unf(words[2]), illConditioned: decodeResult(lines.slice(0, -1)).illConditioned };
+        const decisions = decodeResult(lines.slice(0, -1));
+        return { fraction1: unf(words[1]), fraction2: unf(words[2]), illConditioned: decisions.illConditioned, near: decisions.near };
       }),
     rollout: (steps) =>
       exchange(`rollout ${steps}\n`, async () => {

@@ -21,6 +21,27 @@ extern int b3OracleContactId;
 // side of the test, as a contraction of a*e - b*b within rounding of the threshold may.
 typedef bool b3OracleSegmentHook( float ae, float bb, float denom, float threshold );
 extern b3OracleSegmentHook* b3OracleSegmentDecision;
+
+// The step lane's decision hooks (B3_ORACLE_STEP_HOOKS), each at a discrete test of the solver whose
+// deciding quantity the adapter bounds from these operands.
+typedef struct b3Contact b3Contact;
+// Contact push's `s > 0` per lane: wide values as B3_SIMD_WIDTH floats; the hook may rewrite
+// `separated`'s lanes. The step lane's scalar build holds a lane's mask as 1.0f or 0.0f. A lane
+// without this point has zero normal mass.
+typedef void b3OracleSeparationHook( b3Contact* const* contacts, int width, const void* s, void* separated, const void* normal,
+									 const void* dpA, const void* dpB, const void* dqA, const void* dqB, const void* rA,
+									 const void* rB, const void* normalA, const void* normalB, const void* normalSeparation,
+									 const void* baseSeparation, const void* normalMass );
+extern b3OracleSeparationHook* b3OracleSeparationDecision;
+// A revolute or spherical limit's `c > 0`, from its relative rotation; returns the c to test.
+typedef float b3OracleLimitHook( int jointId, int limit, bool useBias, float c, float limitValue, b3Quat dqA, b3Quat dqB,
+								 b3Quat frameA, b3Quat frameB, b3Quat relQ );
+extern b3OracleLimitHook* b3OracleLimitDecision;
+// A prismatic limit's `C > 0`, from its translation's operands; returns the C to test.
+typedef float b3OracleTranslationHook( int jointId, int limit, bool useBias, float C, float limitValue, b3Vec3 dcA, b3Vec3 dcB,
+									   b3Vec3 deltaCenter, b3Vec3 rA, b3Vec3 rB, b3Vec3 frameA, b3Vec3 frameB, b3Quat dqA,
+									   b3Quat dqB, b3Vec3 localAxis, b3Vec3 axis, b3Vec3 d );
+extern b3OracleTranslationHook* b3OracleTranslationDecision;
 extern uint32_t b3OracleRecycleVisits;
 extern uint32_t b3OracleO4ConvexManifoldVisits;
 extern uint32_t b3OracleO4MeshContactVisits;

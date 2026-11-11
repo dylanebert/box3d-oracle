@@ -1,6 +1,9 @@
 // Step oracle: loads the state one b3World_Step reads into upstream structs, steps once and
 // writes the state after it. Protocol: whitespace tokens on stdin and stdout, floats as eight
 // hexadecimal digits of their bits, "-" for an upstream default. See bin/step.ts.
+#include <float.h>
+#include <math.h>
+
 #include "bitset.h"
 #include "body.h"
 #include "constraint_graph.h"
@@ -15,7 +18,6 @@
 #include "box3d/box3d.h"
 #include "box3d/collision.h"
 
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -283,48 +285,176 @@ static void readScene(void)
 
 static b3BodyId bodyIds[MAX_ITEMS];
 
-// Ill-conditioned decisions: b3SegmentDistance decides whether segments are parallel by
-// denom = a*e - b*b > threshold. A port may contract a*e - b*b into one fused multiply-add, which
-// rounds one product fewer; that moves denom by at most half an ulp of either product, so a denom
-// within ulp(a*e) + ulp(b*b) of the threshold may land on either side. Such a decision is reported
-// per contact, and a contact listed in `flip` takes the other side of it.
-typedef struct IllDecision
+// Ill-conditioned decisions. A discrete test whose deciding quantity upstream computes within
+// rounding of its threshold may land on either side in a port that rounds differently. Each hook
+// bounds the quantity's forward error from the operands at its site (Higham's analysis: a sum of n
+// products errs by at most gamma_n times the sum of their magnitudes), reports a decision within the
+// bound with the entity it belongs to, and takes the other side for an entity listed in `flip`. A
+// decision within ten bounds but outside one is reported as near, for tests of the bound.
+enum { KIND_SEGMENT, KIND_SEPARATION, KIND_REVOLUTE_LOWER, KIND_REVOLUTE_UPPER, KIND_TWIST_LOWER, KIND_TWIST_UPPER,
+	   KIND_CONE, KIND_PRISMATIC_LOWER, KIND_PRISMATIC_UPPER, KIND_COUNT };
+static const char* kindNames[KIND_COUNT] = { "segment", "separation", "revolute-lower", "revolute-upper", "twist-lower",
+											 "twist-upper", "cone", "prismatic-lower", "prismatic-upper" };
+typedef struct Decision
 {
-	int contact;
-	float denom, bound;
-	int side;
-} IllDecision;
-static IllDecision ill[MAX_ITEMS];
-static int illCount;
-static int flips[MAX_ITEMS];
-static int flipCount;
+	int kind, id;
+	float quantity, bound;
+	int side, near;
+} Decision;
+static Decision decisions[4 * MAX_ITEMS];
+static int decisionCount;
+static int flipContacts[MAX_ITEMS], flipContactCount;
+static int flipJoints[MAX_ITEMS], flipJointCount;
 
+static const double unit = 0x1p-24;
+static double gam(int n) { return n * unit / (1.0 - n * unit); }
 static float ulp(float x)
 {
 	x = fabsf(x);
 	return nextafterf(x, INFINITY) - x;
 }
-
-static bool segmentDecision(float ae, float bb, float denom, float threshold)
+static bool listed(const int* ids, int count, int id)
 {
-	float bound = ulp(ae) + ulp(bb);
-	if (fabs((double)denom - (double)threshold) > (double)bound) return false;
-	if (illCount < MAX_ITEMS) ill[illCount++] = (IllDecision){ b3OracleContactId, denom, bound, denom > threshold };
-	for (int k = 0; k < flipCount; ++k)
-		if (flips[k] == b3OracleContactId) return true;
+	for (int k = 0; k < count; ++k)
+		if (ids[k] == id) return true;
 	return false;
 }
+// Reports the decision if within its bound (or ten of them, as near); returns whether to flip it.
+static bool decide(int kind, int id, double quantity, double threshold, double bound, bool flipped)
+{
+	double margin = fabs(quantity - threshold);
+	if (margin > 10.0 * bound) return false;
+	bool ill = margin <= bound;
+	if (decisionCount < 4 * MAX_ITEMS) decisions[decisionCount++] = (Decision){ kind, id, (float)quantity, (float)bound, quantity > threshold, !ill };
+	return ill && flipped;
+}
 
+// b3SegmentDistance's denom = a*e - b*b > threshold. A contraction rounds one product fewer, moving
+// denom by at most half an ulp of either product; ulp(a*e) + ulp(b*b) bounds that.
+static bool segmentDecision(float ae, float bb, float denom, float threshold)
+{
+	return decide(KIND_SEGMENT, b3OracleContactId, denom, threshold, ulp(ae) + ulp(bb), listed(flipContacts, flipContactCount, b3OracleContactId));
+}
+
+typedef struct V { double x, y, z; } V;
+static V vabs(b3Vec3 v) { return (V){ fabs(v.x), fabs(v.y), fabs(v.z) }; }
+static V vadd(V a, V b) { return (V){ a.x + b.x, a.y + b.y, a.z + b.z }; }
+static V vscale(double s, V a) { return (V){ s * a.x, s * a.y, s * a.z }; }
+static double vdot(V a, V b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+// |a| x |b| with every term's magnitude: bounds each component of a cross product's terms.
+static V crossAbs(V a, V b) { return (V){ a.y * b.z + a.z * b.y, a.z * b.x + a.x * b.z, a.x * b.y + a.y * b.x }; }
+// Componentwise error bound of b3RotateVector or b3InvRotateVector(q, v), v + 2 cross(q.v, cross(q.v, v) +- q.s v),
+// for exact operands: each component is a sum of at most six rounded steps over these magnitudes.
+static V rotateError(b3Quat q, b3Vec3 v)
+{
+	V qv = vabs(q.v), av = vabs(v);
+	V t2 = vadd(crossAbs(qv, av), vscale(fabs(q.s), av));
+	return vscale(gam(6), vadd(av, vscale(2.0, crossAbs(qv, t2))));
+}
+
+// Contact push's s = (dot(n, dpB - dpA) + (dot(nB, rB) - dot(nA, rA))) + baseSeparation, nX = b3InvRotateVector(dqX, n).
+static void separationDecision(b3Contact* const* contacts, int width, const void* s, void* separated, const void* normal,
+							   const void* dpA, const void* dpB, const void* dqA, const void* dqB, const void* rA,
+							   const void* rB, const void* normalA, const void* normalB, const void* normalSeparation,
+							   const void* baseSeparation, const void* normalMass)
+{
+	const float* M = normalMass;
+	const float* S = s;
+	float* mask = separated;
+	const float *N = normal, *PA = dpA, *PB = dpB, *QA = dqA, *QB = dqB, *RA = rA, *RB = rB, *NA = normalA, *NB = normalB,
+				*NS = normalSeparation, *BS = baseSeparation;
+	for (int lane = 0; lane < width; ++lane)
+	{
+		if (contacts[lane] == NULL || M[lane] == 0.0f) continue;
+#define LANE3( P ) ( (b3Vec3){ P[lane], P[width + lane], P[2 * width + lane] } )
+#define LANEQ( P ) ( (b3Quat){ { P[lane], P[width + lane], P[2 * width + lane] }, P[3 * width + lane] } )
+		b3Vec3 n = LANE3(N), pa = LANE3(PA), pb = LANE3(PB), ra = LANE3(RA), rb = LANE3(RB), na = LANE3(NA), nb = LANE3(NB);
+		b3Quat qa = LANEQ(QA), qb = LANEQ(QB);
+#undef LANE3
+#undef LANEQ
+		V an = vabs(n);
+		double errNormal = gam(4) * vdot(an, vadd(vabs(pa), vabs(pb)));
+		double errA = gam(3) * vdot(vabs(na), vabs(ra)) + vdot(rotateError(qa, n), vabs(ra));
+		double errB = gam(3) * vdot(vabs(nb), vabs(rb)) + vdot(rotateError(qb, n), vabs(rb));
+		double dA = fabs(na.x * ra.x + na.y * ra.y + na.z * ra.z), dB = fabs(nb.x * rb.x + nb.y * rb.y + nb.z * rb.z);
+		double bound = errNormal + errA + errB + gam(3) * (fabs(NS[lane]) + dA + dB + fabs(BS[lane]));
+		int id = contacts[lane]->contactId;
+		if (decide(KIND_SEPARATION, id, S[lane], 0.0, bound, listed(flipContacts, flipContactCount, id)))
+			mask[lane] = mask[lane] != 0.0f ? 0.0f : 1.0f;
+	}
+}
+
+typedef struct Q { double x, y, z, w; } Q;
+static Q qabs(b3Quat q) { return (Q){ fabs(q.v.x), fabs(q.v.y), fabs(q.v.z), fabs(q.s) }; }
+// |a| (x) |b| for a quaternion product, every term's magnitude.
+static Q qmulAbs(Q a, Q b)
+{
+	return (Q){ a.w * b.x + a.x * b.w + a.y * b.z + a.z * b.y, a.w * b.y + a.y * b.w + a.z * b.x + a.x * b.z,
+				a.w * b.z + a.z * b.w + a.x * b.y + a.y * b.x, a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z };
+}
+static Q qadd(Q a, Q b) { return (Q){ a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w }; }
+static Q qscale(double s, Q a) { return (Q){ s * a.x, s * a.y, s * a.z, s * a.w }; }
+
+// A revolute or spherical limit's c from relQ = b3InvMulQuat(dqA * frameA, dqB * frameB): each product
+// component sums four rounded terms; the twist angle is 2 atan2(z, w) and the swing 2 atan2(|xy|, |zw|),
+// whose error follows from the components' through atan2's derivative, plus b3Atan2's own rounding.
+static float limitDecision(int jointId, int limit, bool useBias, float c, float limitValue, b3Quat dqA, b3Quat dqB,
+						   b3Quat frameA, b3Quat frameB, b3Quat relQ)
+{
+	if (!useBias) return c; // without bias both sides of c > 0 meet at c = 0
+	Q qa = qmulAbs(qabs(dqA), qabs(frameA)), qb = qmulAbs(qabs(dqB), qabs(frameB));
+	Q ea = qscale(gam(4), qa), eb = qscale(gam(4), qb);
+	Q er = qadd(qscale(gam(4), qmulAbs(qa, qb)), qadd(qmulAbs(ea, qb), qmulAbs(qa, eb)));
+	double x = relQ.v.x, y = relQ.v.y, z = relQ.v.z, w = relQ.s, angle, errAngle;
+	if (limit == 4)
+	{
+		double r1 = sqrt(z * z + w * w), r2 = sqrt(x * x + y * y);
+		double e1 = (r1 > 0 ? (fabs(z) * er.z + fabs(w) * er.w) / r1 : er.z + er.w) + gam(3) * r1;
+		double e2 = (r2 > 0 ? (fabs(x) * er.x + fabs(y) * er.y) / r2 : er.x + er.y) + gam(3) * r2;
+		angle = 2.0 * atan2(r2, r1);
+		errAngle = 2.0 * (r1 * e2 + r2 * e1) / (r1 * r1 + r2 * r2);
+	}
+	else
+	{
+		angle = 2.0 * atan2(fabs(z), fabs(w));
+		errAngle = 2.0 * (fabs(w) * er.z + fabs(z) * er.w) / (z * z + w * w);
+	}
+	double bound = errAngle + gam(12) * fabs(angle) + gam(1) * (fabs(angle) + fabs(limitValue));
+	int kind = (int[]){ KIND_REVOLUTE_LOWER, KIND_REVOLUTE_UPPER, KIND_TWIST_LOWER, KIND_TWIST_UPPER, KIND_CONE }[limit];
+	if (!decide(kind, jointId, c, 0.0, bound, listed(flipJoints, flipJointCount, jointId))) return c;
+	// The other side, at the threshold.
+	return c > 0.0f ? -0.0f : FLT_TRUE_MIN;
+}
+
+// A prismatic limit's C from translation = dot(d, axis), d = ((dcB - dcA) + deltaCenter) + (rB - rA),
+// rX = b3RotateVector(dqX, frameX.p), axis = b3RotateVector(dqA, localAxis).
+static float translationDecision(int jointId, int limit, bool useBias, float C, float limitValue, b3Vec3 dcA, b3Vec3 dcB,
+								 b3Vec3 deltaCenter, b3Vec3 rA, b3Vec3 rB, b3Vec3 frameA, b3Vec3 frameB, b3Quat dqA,
+								 b3Quat dqB, b3Vec3 localAxis, b3Vec3 axis, b3Vec3 d)
+{
+	if (!useBias) return C;
+	V ed = vadd(vscale(gam(3), vadd(vadd(vadd(vabs(dcA), vabs(dcB)), vabs(deltaCenter)), vadd(vabs(rA), vabs(rB)))),
+				vadd(rotateError(dqA, frameA), rotateError(dqB, frameB)));
+	V ea = rotateError(dqA, localAxis);
+	double translation = d.x * axis.x + d.y * axis.y + d.z * axis.z;
+	double bound = gam(3) * vdot(vabs(d), vabs(axis)) + vdot(ed, vabs(axis)) + vdot(vabs(d), ea) + gam(1) * (fabs(translation) + fabs(limitValue));
+	int kind = limit == 5 ? KIND_PRISMATIC_LOWER : KIND_PRISMATIC_UPPER;
+	if (!decide(kind, jointId, C, 0.0, bound, listed(flipJoints, flipJointCount, jointId))) return C;
+	return C > 0.0f ? -0.0f : FLT_TRUE_MIN;
+}
+
+// ill kind id quantity bound side, or near ... for one within ten bounds.
 static void writeIll(void)
 {
-	for (int k = 0; k < illCount; ++k)
+	for (int k = 0; k < decisionCount; ++k)
 	{
-		printf("ill %d", ill[k].contact);
-		putFloat(ill[k].denom);
-		putFloat(ill[k].bound);
-		printf(" %d\n", ill[k].side);
+		Decision* d = decisions + k;
+		printf("%s %s %d", d->near ? "near" : "ill", kindNames[d->kind], d->id);
+		putFloat(d->quantity);
+		putFloat(d->bound);
+		printf(" %d\n", d->side);
 	}
-	illCount = 0;
+	decisionCount = 0;
 }
 
 // The scene in creation order, so body, shape and joint ids are scene indices and joint colors are
@@ -545,7 +675,7 @@ static void addToColor(b3World* world, b3Contact* contact, int wanted)
 // pool nextIndex freeCount free...
 // contacts count, then per contact: id shapeA shapeB touching color pointCount
 //   (featureId normalImpulse) per point, frictionImpulse(3) twistImpulse rollingImpulse(3) cache words
-// flip count contact... (the contacts that take the other side of an ill-conditioned decision)
+// flip count (contact|joint id)... (entities that take the other side of their ill-conditioned decisions)
 static void loadAndStep(void)
 {
 	b3WorldId worldId = buildWorld();
@@ -662,14 +792,23 @@ static void loadAndStep(void)
 		b3Array_Push(world->contactIdPool.freeArray, id);
 	}
 	expect("flip");
-	flipCount = readInt();
+	int flipCount = readInt();
 	if (flipCount < 0 || flipCount > MAX_ITEMS) fail("flip count out of range");
-	for (int k = 0; k < flipCount; ++k) flips[k] = readInt();
+	flipContactCount = flipJointCount = 0;
+	for (int k = 0; k < flipCount; ++k)
+	{
+		next();
+		bool joint = strcmp(token, "joint") == 0;
+		if (!joint && strcmp(token, "contact") != 0) fail("flip entity is contact or joint");
+		int id = readInt();
+		if (joint) flipJoints[flipJointCount++] = id;
+		else flipContacts[flipContactCount++] = id;
+	}
 	expect("end");
 
-	illCount = 0;
+	decisionCount = 0;
 	b3World_Step(worldId, scene.timeStep, scene.subStepCount);
-	flipCount = 0;
+	flipContactCount = flipJointCount = 0;
 	writeIll();
 
 	writeResult(world);
@@ -698,12 +837,12 @@ static void rollout(void)
 // segment flip p1 q1 p2 q2: one b3SegmentDistance, its fractions and any ill-conditioned decision.
 static void segment(void)
 {
-	flipCount = readInt() != 0 ? 1 : 0;
-	flips[0] = -1;
+	flipContactCount = readInt() != 0 ? 1 : 0;
+	flipContacts[0] = -1;
 	b3Vec3 p1 = readVec3(), q1 = readVec3(), p2 = readVec3(), q2 = readVec3();
 	b3OracleContactId = -1;
 	b3SegmentDistanceResult result = b3SegmentDistance(p1, q1, p2, q2);
-	flipCount = 0;
+	flipContactCount = 0;
 	writeIll();
 	printf("segment");
 	putFloat(result.fraction1);
@@ -712,9 +851,67 @@ static void segment(void)
 	fflush(stdout);
 }
 
+// decide kind operands... flip: one decision hook on supplied operands, for tests of its bound.
+//   separation s n dpA dpB dqA dqB rA rB nA nB normalSeparation baseSeparation
+//   limit index(0-4) c limitValue dqA dqB frameA frameB relQ
+//   translation index(5-6) C limitValue dcA dcB deltaCenter rA rB frameA frameB dqA dqB localAxis axis d
+static void decideCommand(void)
+{
+	next();
+	char kind[32];
+	snprintf(kind, sizeof(kind), "%s", token);
+	float result = 0.0f;
+	if (strcmp(kind, "separation") == 0)
+	{
+		float sv = readFloat();
+		b3Vec3 n = readVec3(), pa = readVec3(), pb = readVec3();
+		b3Quat qa = readQuat(), qb = readQuat();
+		b3Vec3 ra = readVec3(), rb = readVec3(), na = readVec3(), nb = readVec3();
+		float ns = readFloat(), base = readFloat(), mass = 1.0f;
+		flipContactCount = readInt() != 0 ? 1 : 0;
+		flipContacts[0] = -1;
+		static b3Contact probe;
+		probe.contactId = -1;
+		b3Contact* lanes[1] = { &probe };
+		float mask = sv > 0.0f ? 1.0f : 0.0f;
+		separationDecision(lanes, 1, &sv, &mask, &n, &pa, &pb, &qa, &qb, &ra, &rb, &na, &nb, &ns, &base, &mass);
+		result = mask;
+	}
+	else if (strcmp(kind, "limit") == 0)
+	{
+		int index = readInt();
+		float c = readFloat(), limitValue = readFloat();
+		b3Quat qa = readQuat(), qb = readQuat(), fa = readQuat(), fb = readQuat(), rel = readQuat();
+		flipJointCount = readInt() != 0 ? 1 : 0;
+		flipJoints[0] = -1;
+		result = limitDecision(-1, index, true, c, limitValue, qa, qb, fa, fb, rel);
+	}
+	else if (strcmp(kind, "translation") == 0)
+	{
+		int index = readInt();
+		float c = readFloat(), limitValue = readFloat();
+		b3Vec3 dca = readVec3(), dcb = readVec3(), dc = readVec3(), ra = readVec3(), rb = readVec3(), fa = readVec3(), fb = readVec3();
+		b3Quat qa = readQuat(), qb = readQuat();
+		b3Vec3 local = readVec3(), axis = readVec3(), d = readVec3();
+		flipJointCount = readInt() != 0 ? 1 : 0;
+		flipJoints[0] = -1;
+		result = translationDecision(-1, index, true, c, limitValue, dca, dcb, dc, ra, rb, fa, fb, qa, qb, local, axis, d);
+	}
+	else fail("decide kind is separation, limit or translation");
+	flipContactCount = flipJointCount = 0;
+	writeIll();
+	printf("decided");
+	putFloat(result);
+	printf("\nend\n");
+	fflush(stdout);
+}
+
 int main(void)
 {
 	b3OracleSegmentDecision = segmentDecision;
+	b3OracleSeparationDecision = separationDecision;
+	b3OracleLimitDecision = limitDecision;
+	b3OracleTranslationDecision = translationDecision;
 	readScene();
 	writeMass();
 	printf("ready\n");
@@ -724,7 +921,8 @@ int main(void)
 		if (strcmp(token, "step") == 0) loadAndStep();
 		else if (strcmp(token, "rollout") == 0) rollout();
 		else if (strcmp(token, "segment") == 0) segment();
-		else fail("step, rollout or segment expected");
+		else if (strcmp(token, "decide") == 0) decideCommand();
+		else fail("step, rollout, segment or decide expected");
 	}
 	return 0;
 }

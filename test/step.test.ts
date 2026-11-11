@@ -150,7 +150,7 @@ test("an ill-conditioned segment decision is reported and its other side forced"
   const p2: [number, number, number] = [word(0x3de1479c), word(0xbd9d27a0), word(0xbea1f19a)];
   const q2: [number, number, number] = [word(0xbde147c0), word(0xbd9d274e), word(0xbea1f19c)];
   const near = await oracle.segment(p1, q1, p2, q2);
-  expect(near.illConditioned).toEqual([{ contact: -1, denom: 0, bound: expect.any(Number), side: false }]);
+  expect(near.illConditioned).toEqual([{ kind: "segment", id: -1, quantity: 0, bound: expect.any(Number), side: false }]);
   expect(near.illConditioned[0].bound).toBeGreaterThan(2.07e-11);
   expect(near.fraction1).toBe(0);
   const other = await oracle.segment(p1, q1, p2, q2, true);
@@ -168,5 +168,56 @@ test("a decision outside the bound is not reported, and one ten bounds away woul
   const bound = ulp32(1) + ulp32(Math.fround(b * b));
   expect(denom).toBeGreaterThan(bound);
   expect(denom).toBeLessThan(10 * bound);
-  expect((await at(angle)).illConditioned).toEqual([]);
+  const outside = await at(angle);
+  expect(outside.illConditioned).toEqual([]);
+  expect(outside.near.map((d) => d.kind)).toEqual(["segment"]);
+}, 60_000);
+
+const unitQuat = (x: number, y: number, z: number): number[] => [x, y, z, Math.sqrt(1 - x * x - y * y - z * z)];
+// Each decision hook on operands where only the deciding quantity moves: within its bound it is
+// reported and its other side taken when flipped; at five bounds it is only near, which a bound
+// widened tenfold would report.
+const U = 2 ** -24;
+const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+const absDot = (a: number[], b: number[]) => sum(a.map((x, i) => Math.abs(x * b[i])));
+// Leading-order estimates of each bound: unit roundoff times the magnitudes the quantity sums.
+const estimates: Record<string, (o: number[]) => number> = {
+  separation: (o) => U * (absDot(o.slice(1, 4), o.slice(4, 7).map((x, i) => Math.abs(x) + Math.abs(o[7 + i]))) + absDot(o.slice(24, 27), o.slice(18, 21)) + absDot(o.slice(27, 30), o.slice(21, 24)) + Math.abs(o[30]) + Math.abs(o[31]) + sum(o.slice(18, 24).map(Math.abs))),
+  limit: (o) => { const [x, y, z, w] = o.slice(19, 23); const twist = o[0] !== 4; const r = twist ? Math.hypot(z, w) : 1; return U * ((twist ? 2 * (Math.abs(z) + Math.abs(w)) / (r * r) : 4) + Math.abs(o[2])); },
+  translation: (o) => 0.4 * U * (absDot(o.slice(36, 39), o.slice(33, 36)) + sum(o.slice(3, 24).map(Math.abs)) + Math.abs(o[2])),
+};
+const hooks: [string, "separation" | "limit" | "translation", (q: number) => number[], (q: number, value: number) => boolean][] = [
+  ["separation", "separation", (q) => [q, 0, 1, 0, 0, 0, 0, 1e-3, -2e-3, 5e-4, 0, 0, 0, 1, ...unitQuat(0.01, 0.002, 0), 0.1, -0.05, 0.02, -0.03, 0.12, 0.01, 0, 1, 0, 0.0199, 0.9998, 0.002, 2e-3, -0.01], (q, mask) => (mask === 1) === q > 0],
+  ...([[0, "revolute-lower"], [2, "twist-lower"], [4, "cone"]] as const).map(([index, name]) => [name, "limit", (q: number) => [index, q, -0.5, ...unitQuat(0.003, -0.001, 0.002), ...unitQuat(-0.002, 0.001, 0.004), ...unitQuat(0.1, 0.2, 0.05), ...unitQuat(-0.3, 0.1, 0.2), ...unitQuat(0.05, 0.3, -0.24)], (q: number, c: number) => (c > 0) === q > 0] as [string, "limit", (q: number) => number[], (q: number, value: number) => boolean]),
+  ["prismatic-lower", "translation", (q) => [5, q, -1.8, 1e-3, 2e-3, 0, -3e-4, 1e-3, 0, 0.2, 1, 0, 0, 0.5, 0, -0.1, -0.4, 0.05, 0, 1, 0, 0, -0.5, 0, ...unitQuat(0.001, 0, 0.002), ...unitQuat(0, 0.003, 0), 1, 0, 0, 1, 0.002, -0.001, 0.3, 1.6, 0.02], (q, c) => (c > 0) === q > 0],
+];
+for (const [name, kind, operands, sameSide] of hooks) {
+  test(`${name}: a decision within its forward error bound is reported and flips; five bounds away is only near`, async () => {
+    const probe = await oracle.decide(kind, operands(0));
+    expect(probe.illConditioned.map((d) => d.kind)).toEqual([name]);
+    const bound = probe.illConditioned[0].bound;
+    const estimate = estimates[kind](operands(0));
+    expect(bound).toBeGreaterThan(estimate);
+    expect(bound).toBeLessThan(10 * estimate);
+    const inside = Math.fround(0.5 * bound);
+    const kept = await oracle.decide(kind, operands(inside));
+    expect(kept.illConditioned.map((d) => d.kind)).toEqual([name]);
+    expect(sameSide(inside, kept.value)).toBe(true);
+    const flipped = await oracle.decide(kind, operands(inside), true);
+    expect(sameSide(inside, flipped.value)).toBe(false);
+    const outside = await oracle.decide(kind, operands(Math.fround(5 * bound)), true);
+    expect(outside.illConditioned).toEqual([]);
+    expect(outside.near.map((d) => d.kind)).toEqual([name]);
+    expect(sameSide(Math.fround(5 * bound), outside.value)).toBe(true);
+  }, 60_000);
+}
+
+// Sentinel: the separation hook sits in upstream's contact push, and its other side changes the step.
+test("flipping a contact's ill-conditioned separation changes upstream's step", async () => {
+  const index = native.findIndex((r) => r.illConditioned.some((d) => d.kind === "separation"));
+  expect(index).toBeGreaterThan(0);
+  const state = nextState(native[index - 1]);
+  const decision = native[index].illConditioned.find((d) => d.kind === "separation")!;
+  const flipped = await oracle.step({ ...state, flip: [{ entity: "contact", id: decision.id }] });
+  expect(JSON.stringify(flipped.bodies)).not.toEqual(JSON.stringify(native[index].bodies));
 }, 60_000);

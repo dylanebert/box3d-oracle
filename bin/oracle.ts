@@ -103,21 +103,28 @@ function hookDigest(): string {
   return digest(`${JSON.stringify(PATCHES)}\n${readFileSync(join(import.meta.dir, "..", "hooks", "oracle_hooks.h"), "utf8")}`);
 }
 
-function patchOfficialSource(pristine: string, patched: string): { digest: string } {
+function patchOfficialSource(pristine: string, patched: string): { digest: string; applied: string[] } {
   mkdirSync(dirname(patched), { recursive: true });
   checked("cp", ["-R", pristine, patched]);
   const byFile = new Map<string, OraclePatch[]>();
   for (const patch of PATCHES) byFile.set(patch.file, [...(byFile.get(patch.file) ?? []), patch]);
   const additions: string[] = [];
-  for (const [file, patches] of byFile) {
+  const applied: string[] = [];
+  for (const [file, all] of byFile) {
     const originalPath = join(pristine, file);
     const patchedPath = join(patched, file);
-    const original = readFileSync(originalPath, "utf8");
+    const exists = existsSync(originalPath);
+    const original = exists ? readFileSync(originalPath, "utf8") : "";
+    // An optional patch marks a site only some revisions have: its file or anchor may be absent.
+    const patches = all.filter((patch) => !patch.optional || [patch, ...(patch.alternatives ?? [])].some((site) => original.includes(site.anchor)));
+    if (patches.length === 0) continue;
+    if (!exists) throw new OracleError(`patched file is missing: ${file}`);
     let text = original;
     for (const patch of patches) {
       const site = patchSite(text, patch);
       text = text.replace(site.anchor, site.addition);
       additions.push(`${patch.marker}\n${site.addition.slice(site.anchor.length)}`);
+      applied.push(patch.marker);
     }
     writeFileSync(patchedPath, text);
     verifyPatchSet(original, text, patches);
@@ -126,7 +133,7 @@ function patchOfficialSource(pristine: string, patched: string): { digest: strin
   const upstreamSources = readdirSync(join(pristine, "src")).filter((name) => name.endsWith(".c")).map((name) => readFileSync(join(pristine, "src", name), "utf8"));
   rejectCopiedBody(additions, upstreamSources, 32);
   rejectCopiedScenarioAdapter(pristine);
-  return { digest: hookDigest() };
+  return { digest: hookDigest(), applied };
 }
 
 export function verifyDeclaredSymbols(source: string, nmEvidence: string, declarations: readonly { symbol: string; file: string }[] = DECLARED_SYMBOLS): void {
@@ -465,9 +472,10 @@ function buildScenario(patched: string, build: string, table: string): { executa
 export function buildStepOracle(sha: string): string {
   requireFullSha(sha);
   const member = join(import.meta.dir, "..");
-  const cmake = ["-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "-DBOX3D_SAMPLES=OFF", "-DBOX3D_BENCHMARKS=OFF", "-DBOX3D_DOCS=OFF", "-DBOX3D_UNIT_TESTS=OFF", "-DBOX3D_VALIDATE=ON", "-DCMAKE_C_FLAGS=-DB3_ORACLE_HOOKS"];
+  const cmake = ["-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "-DBOX3D_SAMPLES=OFF", "-DBOX3D_BENCHMARKS=OFF", "-DBOX3D_DOCS=OFF", "-DBOX3D_UNIT_TESTS=OFF", "-DBOX3D_VALIDATE=ON", "-DCMAKE_C_FLAGS=-DB3_ORACLE_HOOKS -DB3_ORACLE_STEP_HOOKS"];
   // NDEBUG as the Release library is built, whose asserts reference no b3InternalAssert.
-  const cflags = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-DB3_ORACLE_HOOKS", "-DNDEBUG"];
+  // Contraction off, as upstream builds its library: the adapter's bounds are float32 arithmetic.
+  const cflags = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-DNDEBUG"];
   const adapter = join(member, "adapter", "step.c");
   const key = digest([sha, hookDigest(), readFileSync(adapter, "utf8"), ...cmake, ...cflags].join("\n")).slice(0, 16);
   const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
@@ -479,7 +487,9 @@ export function buildStepOracle(sha: string): string {
   verifyPristine(official, sha);
   const patched = join(cache, "checkouts", `${sha}-step-patched`);
   rmSync(patched, { recursive: true, force: true });
-  patchOfficialSource(official, patched);
+  const { applied } = patchOfficialSource(official, patched);
+  const missing = PATCHES.filter((patch) => patch.optional && !applied.includes(patch.marker)).map((patch) => patch.marker);
+  if (missing.length) throw new OracleError(`step lane hooks have no site at ${sha}: ${missing.join(", ")}`);
   const build = join(cache, "step-builds", `${sha}-${key}-work`);
   rmSync(build, { recursive: true, force: true });
   const generator = cmakeGenerator();

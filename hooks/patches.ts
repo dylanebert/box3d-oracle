@@ -8,7 +8,17 @@ export type OraclePatch = OracleSite & {
   file: string;
   marker: string;
   alternatives?: OracleSite[];
+  /** A site only the step lane's revision has; other revisions skip it, and the step lane requires it. */
+  optional?: boolean;
 };
+
+const STEP = "#if defined( B3_ORACLE_HOOKS ) && defined( B3_ORACLE_STEP_HOOKS )\n";
+
+/** A joint limit's `c > 0` test: the hook may move c to the threshold's other side. */
+function limitSite(file: string, marker: string, line: string, indent: string, call: string): OraclePatch {
+  const anchor = `${indent}${line}\n${indent}float bias = 0.0f;\n${indent}float massScale = 1.0f;\n${indent}float impulseScale = 0.0f;\n`;
+  return { file, marker, optional: true, anchor, addition: `${anchor}${STEP}${indent}if ( b3OracleLimitDecision != NULL )\n${indent}{\n${indent}\tc = b3OracleLimitDecision( ${call} );\n${indent}}\n#endif\n` };
+}
 
 const visitConvexManifold = "#ifdef B3_ORACLE_SENTINELS\n\t++b3OracleO4ConvexManifoldVisits;\n#endif\n";
 
@@ -103,7 +113,7 @@ export const PATCHES: OraclePatch[] = [
     file: "src/math_functions.c",
     marker: "math.segment-distance.hooks",
     anchor: '#include "math_internal.h"\n',
-    addition: '#include "math_internal.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\nb3OracleSegmentHook* b3OracleSegmentDecision = NULL;\n#endif\n',
+    addition: '#include "math_internal.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\nb3OracleSegmentHook* b3OracleSegmentDecision = NULL;\nb3OracleSeparationHook* b3OracleSeparationDecision = NULL;\nb3OracleLimitHook* b3OracleLimitDecision = NULL;\nb3OracleTranslationHook* b3OracleTranslationDecision = NULL;\n#endif\n',
   },
   {
     file: "src/math_functions.c",
@@ -111,6 +121,39 @@ export const PATCHES: OraclePatch[] = [
     anchor: "\tfloat s1 = denom > 1000.0f * FLT_MIN ? b3ClampFloat( ( b * f - c * e ) / denom, 0.0f, 1.0f ) : 0.0f;\n",
     addition: "\tfloat s1 = denom > 1000.0f * FLT_MIN ? b3ClampFloat( ( b * f - c * e ) / denom, 0.0f, 1.0f ) : 0.0f;\n#ifdef B3_ORACLE_HOOKS\n\tif ( b3OracleSegmentDecision != NULL && b3OracleSegmentDecision( a * e, b * b, denom, 1000.0f * FLT_MIN ) )\n\t{\n\t\tfloat ratio = ( b * f - c * e ) / denom;\n\t\ts1 = denom > 1000.0f * FLT_MIN ? 0.0f : ( ratio > 0.0f ? ( ratio < 1.0f ? ratio : 1.0f ) : 0.0f );\n\t}\n#endif\n",
   },
+  {
+    file: "src/contact_solver_wide.inl",
+    marker: "step.contact-push.hooks",
+    optional: true,
+    anchor: '#include "simd_wide.h"\n',
+    addition: `#include "simd_wide.h"\n${STEP}#include "oracle_hooks.h"\n#endif\n`,
+  },
+  {
+    file: "src/contact_solver_wide.inl",
+    marker: "step.contact-push.separation",
+    optional: true,
+    anchor: "\t\t\t\tb3FloatW separated = b3GreaterThanW( s, zeroW );\n",
+    addition: `\t\t\t\tb3FloatW separated = b3GreaterThanW( s, zeroW );\n${STEP}\t\t\t\tif ( b3OracleSeparationDecision != NULL )\n\t\t\t\t{\n\t\t\t\t\tb3OracleSeparationDecision( c->contacts, B3_SIMD_WIDTH, &s, &separated, &cm->normal, &bA.dp, &bB.dp, &bA.dq, &bB.dq, &rA, &rB, &normalA, &normalB, &normalSeparation, &cp->baseSeparations, &cp->normalMasses );\n\t\t\t\t}\n#endif\n`,
+  },
+  ...["revolute_joint.c", "spherical_joint.c", "prismatic_joint.c"].map((file) => ({
+    file: `src/${file}`,
+    marker: `step.${file.split("_")[0]}.hooks`,
+    optional: true,
+    anchor: '#include "joint.h"\n',
+    addition: `#include "joint.h"\n${STEP}#include "oracle_hooks.h"\n#endif\n`,
+  })) as OraclePatch[],
+  limitSite("src/revolute_joint.c", "step.revolute.lower", "float c = angle - joint->lowerAngle;", "\t\t\t\t", "base->jointId, 0, useBias, c, joint->lowerAngle, stateA->deltaRotation, stateB->deltaRotation, joint->frameA.q, joint->frameB.q, relQ"),
+  limitSite("src/revolute_joint.c", "step.revolute.upper", "float c = joint->upperAngle - angle;", "\t\t\t\t", "base->jointId, 1, useBias, c, joint->upperAngle, stateA->deltaRotation, stateB->deltaRotation, joint->frameA.q, joint->frameB.q, relQ"),
+  limitSite("src/spherical_joint.c", "step.spherical.twist-lower", "float c = twistAngle - joint->lowerTwistAngle;", "\t\t\t\t", "base->jointId, 2, useBias, c, joint->lowerTwistAngle, stateA->deltaRotation, stateB->deltaRotation, joint->frameA.q, joint->frameB.q, relQ"),
+  limitSite("src/spherical_joint.c", "step.spherical.twist-upper", "float c = joint->upperTwistAngle - twistAngle;", "\t\t\t\t", "base->jointId, 3, useBias, c, joint->upperTwistAngle, stateA->deltaRotation, stateB->deltaRotation, joint->frameA.q, joint->frameB.q, relQ"),
+  limitSite("src/spherical_joint.c", "step.spherical.cone", "float c = joint->coneAngle - swingAngle;", "\t\t\t", "base->jointId, 4, useBias, c, joint->coneAngle, stateA->deltaRotation, stateB->deltaRotation, joint->frameA.q, joint->frameB.q, relQ"),
+  ...([["lower", "float C = jointTranslation - joint->lowerTranslation;", 5, "joint->lowerTranslation"], ["upper", "float C = joint->upperTranslation - jointTranslation;", 6, "joint->upperTranslation"]] as const).map(([name, line, code, limit]) => ({
+    file: "src/prismatic_joint.c",
+    marker: `step.prismatic.${name}`,
+    optional: true,
+    anchor: `\t\t\t${line}\n`,
+    addition: `\t\t\t${line}\n${STEP}\t\t\tif ( b3OracleTranslationDecision != NULL )\n\t\t\t{\n\t\t\t\tC = b3OracleTranslationDecision( base->jointId, ${code}, useBias, C, ${limit}, stateA->deltaPosition, stateB->deltaPosition, joint->deltaCenter, rA, rB, joint->frameA.p, joint->frameB.p, stateA->deltaRotation, stateB->deltaRotation, joint->jointAxis, jointAxis, d );\n\t\t\t}\n#endif\n`,
+  })) as OraclePatch[],
   {
     file: "src/convex_manifold.c",
     marker: "o4.convex-manifold.hooks",
