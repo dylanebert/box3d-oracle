@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { entityOf, nextState, OVERFLOW_COLOR, openStepOracle, perturb, SPREAD_SCALE, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
+import { entityOf, nextState, OVERFLOW_COLOR, openStepOracle, perturb, SPREAD_SCALE, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
 
 // The pinned official Box3D the step lane is held at; building it fetches official main once into the cache.
 const SHA = "336263320469e5e9febfe18697ab562488f7e97a";
@@ -277,3 +277,19 @@ test("decisions unstable by their spread are reported and flip within their wind
   }
   expect(checked).toBeGreaterThan(0);
 }, 120_000);
+
+// r-rl-humanoid-3's case: an entity's closest occurrence moves from A to B while every occurrence keeps
+// its side, which is no flip; an occurrence that crosses its threshold is one.
+test("a run takes a decision's other side only when one of its occurrences crosses", () => {
+  // Both occurrences within their local bound, so the entity is unstable either way.
+  const d = (ordinal: number, quantity: number, bound = 2e-8) => ({ kind: "rolling" as const, id: 7, ordinal, quantity, threshold: 0, bound });
+  const baseline = [d(0, -1e-8), d(1, 1.01e-8)];
+  const moved = unstableDecisions(baseline, [[d(0, -1.02e-8), d(1, 1.01e-8)]]);
+  expect(moved.map((u) => u.otherSideRuns)).toEqual([0]);
+  const crossed = unstableDecisions(baseline, [[d(0, 1e-9), d(1, 1.01e-8)]]);
+  expect(crossed.map((u) => [u.otherSideRuns, u.margin])).toEqual([[1, -1e-8]]);
+  // Outside its local bound an occurrence is unstable only by its own spread: 2e-12 here, not ten
+  // times enough, and the other occurrence's larger spread does not lend it one.
+  const tight = [d(0, -1e-8, 1e-12), d(1, 1e-3, 1e-12)];
+  expect(unstableDecisions(tight, [[d(0, -1.0002e-8, 1e-12), d(1, 1.001e-3, 1e-12)]])).toEqual([]);
+});

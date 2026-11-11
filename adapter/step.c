@@ -327,30 +327,42 @@ static double windowOf(const int* ids, const double* windows, int count, int id)
 		if (ids[k] == id) return windows[k];
 	return -1.0;
 }
-// Every hooked decision's closest approach to its threshold this step, per kind and entity: the
-// deciding quantity and threshold there and its local bound, for a spread over perturbed runs.
-typedef struct Approach
+// Every occurrence of a hooked decision this step: its kind and entity, its ordinal among that
+// entity's occurrences of the kind (upstream visits them in a fixed order: substep, then iteration,
+// then manifold point), the deciding quantity, threshold and local bound, for a spread over runs.
+typedef struct Occurrence
 {
-	int kind, id;
-	double quantity, threshold, bound;
-} Approach;
-static Approach approaches[4 * MAX_ITEMS];
-static int approachCount;
-static void approach(int kind, int id, double quantity, double threshold, double bound)
+	int kind, id, ordinal;
+	float quantity, threshold, bound;
+} Occurrence;
+#define MAX_OCCURRENCES ( 64 * MAX_ITEMS )
+static Occurrence occurrences[MAX_OCCURRENCES];
+static int occurrenceCount;
+typedef struct Ordinal
 {
-	for (int k = 0; k < approachCount; ++k)
+	int kind, id, next;
+} Ordinal;
+static Ordinal ordinals[4 * MAX_ITEMS];
+static int ordinalCount;
+static void occur(int kind, int id, double quantity, double threshold, double bound)
+{
+	int ordinal = 0;
+	int k = 0;
+	for (; k < ordinalCount; ++k)
+		if (ordinals[k].kind == kind && ordinals[k].id == id) break;
+	if (k == ordinalCount)
 	{
-		Approach* a = approaches + k;
-		if (a->kind != kind || a->id != id) continue;
-		if (fabs(quantity - threshold) < fabs(a->quantity - a->threshold)) *a = (Approach){ kind, id, quantity, threshold, bound };
-		return;
+		if (ordinalCount == 4 * MAX_ITEMS) fail("too many decision entities");
+		ordinals[ordinalCount++] = (Ordinal){ kind, id, 0 };
 	}
-	if (approachCount < 4 * MAX_ITEMS) approaches[approachCount++] = (Approach){ kind, id, quantity, threshold, bound };
+	ordinal = ordinals[k].next++;
+	if (occurrenceCount == MAX_OCCURRENCES) fail("too many decision occurrences");
+	occurrences[occurrenceCount++] = (Occurrence){ kind, id, ordinal, (float)quantity, (float)threshold, (float)bound };
 }
 // Records the decision (and reports it if within its bound, or ten of them as near); returns whether to flip it.
 static bool decide(int kind, int id, double quantity, double threshold, double bound, double window)
 {
-	approach(kind, id, quantity, threshold, bound);
+	occur(kind, id, quantity, threshold, bound);
 	double margin = fabs(quantity - threshold);
 	bool flip = window >= 0.0 && margin <= fmax(bound, window);
 	if (margin > 10.0 * bound) return flip;
@@ -529,16 +541,16 @@ static void writeIll(void)
 		fprintf(out, " %d\n", d->side);
 	}
 	decisionCount = 0;
-	for (int k = 0; k < approachCount; ++k)
+	for (int k = 0; k < occurrenceCount; ++k)
 	{
-		Approach* a = approaches + k;
-		fprintf(out, "decision %s %d", kindNames[a->kind], a->id);
-		putFloat((float)a->quantity);
-		putFloat((float)a->threshold);
-		putFloat((float)a->bound);
+		Occurrence* o = occurrences + k;
+		fprintf(out, "decision %s %d %d", kindNames[o->kind], o->id, o->ordinal);
+		putFloat(o->quantity);
+		putFloat(o->threshold);
+		putFloat(o->bound);
 		fprintf(out, "\n");
 	}
-	approachCount = 0;
+	occurrenceCount = ordinalCount = 0;
 }
 
 // The scene in creation order, so body, shape and joint ids are scene indices and joint colors are
@@ -947,7 +959,7 @@ static void loadAndStep(void)
 	stopColor = readInt();
 	expect("end");
 
-	decisionCount = approachCount = 0;
+	decisionCount = occurrenceCount = ordinalCount = 0;
 	substep = 0;
 	stageWorld = world;
 	b3World_Step(worldId, scene.timeStep, scene.subStepCount);
