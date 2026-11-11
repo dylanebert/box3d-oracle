@@ -59,7 +59,8 @@ function git(cwd: string, ...args: string[]): string {
   const result = spawnSync("git", args, {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    // The fixture's commits take no host config: a global commit.gpgsign would wait on a signing agent.
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
   });
   if (result.status !== 0) throw new Error(`${args.join(" ")}: ${result.stderr || result.stdout || `status=${result.status} signal=${result.signal}`}`);
   return result.stdout.trim();
