@@ -21,6 +21,7 @@ const scene: StepScene = {
     { type: "dynamic", position: [-1, 2.5, 0], rotation: [0, 0, 0, 1], angularDamping: 0.1 },
     { type: "dynamic", position: [1.3, 0.95, -0.05], rotation: turn(Math.PI / 2) },
     { type: "dynamic", position: [-0.1, 1.1, 0.02], rotation: [0, 0, 0, 1] },
+    { type: "dynamic", position: [2, 0.7, 0.3], rotation: [0.2, 0.3, 0.5, Math.sqrt(1 - 0.38)] },
   ],
   shapes: [
     { body: 0, kind: "box", halfExtents: [20, 1, 20], friction: 0.7 },
@@ -31,6 +32,7 @@ const scene: StepScene = {
     { body: 5, kind: "sphere", center: [0, 0, 0], radius: 0.1, restitution: 0.8 },
     { body: 6, kind: "capsule", center1: [0, -0.1, 0], center2: [0, 0.1, 0], radius: 0.08 },
     { body: 7, kind: "sphere", center: [0, 0, 0], radius: 0.12, friction: 0.4 },
+    { body: 8, kind: "capsule", center1: [-0.25, 0.02, 0], center2: [0.25, -0.02, 0.03], radius: 0.07, rollingResistance: 0.1 },
   ],
   joints: [
     { kind: "revolute", bodyA: 1, bodyB: 2, localFrameA: { p: [0.35, 0, 0], q: [0, 0, 0, 1] }, localFrameB: { p: [-0.35, 0, 0], q: [0, 0, 0, 1] }, enableSpring: true, hertz: 2, dampingRatio: 0.5, enableLimit: true, lowerAngle: -0.6, upperAngle: 0.4, enableMotor: true, maxMotorTorque: 1 },
@@ -78,6 +80,7 @@ test("each loaded field changes the step it feeds", async () => {
   const reference = await oracle.step(base);
   const dynamics = (r: StepResult) => JSON.stringify([r.bodies, r.contacts.map((c) => [c.id, c.touching, c.manifold?.points.map((p) => p.normalImpulse)])]);
   const mutations: [string, (s: StepState) => void][] = [
+    ["body origin", (s) => { s.bodies[1].origin[1] += 1e-3; }],
     ["body center", (s) => { s.bodies[1].center[1] += 1e-3; }],
     ["body rotation", (s) => { s.bodies[2].rotation = turn(0.2); }],
     ["body linear velocity", (s) => { s.bodies[3].linearVelocity[0] += 0.1; }],
@@ -107,6 +110,16 @@ test("each loaded field changes the step it feeds", async () => {
     if (dynamics(result) === dynamics(reference)) unchanged.push(name);
   }
   expect(unchanged).toEqual([]);
+  // A cold convex cache changes the simplex upstream's GJK ends on, which the next step reads; in
+  // this scene it leaves bodies and manifolds as they are.
+  const caches = (r: StepResult) => r.contacts.map((c) => c.cache);
+  let coldChanges = 0;
+  for (let k = 1; k < STEPS; k++) {
+    const cold = nextState(native[k - 1]);
+    for (const c of cold.contacts) c.cache = [0, 0, 0, 0];
+    if (JSON.stringify(caches(await oracle.step(cold))) !== JSON.stringify(caches(native[k]))) coldChanges++;
+  }
+  expect(coldChanges).toBeGreaterThan(0);
   // The contact id pool feeds the ids new contacts take.
   const fresh = native.findIndex((r, k) => k > 0 && r.contacts.some((c) => !native[k - 1].contacts.some((p) => p.id === c.id)));
   expect(fresh).toBeGreaterThan(0);

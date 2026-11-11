@@ -46,6 +46,11 @@ enum { JOINT_REVOLUTE, JOINT_SPHERICAL, JOINT_PRISMATIC, JOINT_FILTER };
 enum { SHAPE_CAPSULE, SHAPE_SPHERE, SHAPE_BOX };
 
 static Scene scene;
+static uint64_t maxFrictionMaterial;
+static float maxFrictionAgainstMaterial(float frictionA, uint64_t materialA, float frictionB, uint64_t materialB)
+{
+	return materialA == maxFrictionMaterial || materialB == maxFrictionMaterial ? b3MaxFloat(frictionA, frictionB) : 0.0f;
+}
 static char token[256];
 
 static void fail(const char* message)
@@ -121,7 +126,7 @@ static void putVec3(b3Vec3 v) { putFloat(v.x); putFloat(v.y); putFloat(v.z); }
 static void putQuat(b3Quat q) { putVec3(q.v); putFloat(q.s); }
 
 // world gx gy gz restitutionThreshold restitutionIterations contactHertz contactDampingRatio contactSpeed
-//   maximumLinearSpeed isotropicInertiaTolerance timeStep subStepCount
+//   maximumLinearSpeed isotropicInertiaTolerance maxFrictionMaterial timeStep subStepCount
 static void readWorld(void)
 {
 	expect("world");
@@ -135,6 +140,16 @@ static void readWorld(void)
 	optFloat(&d->contactSpeed);
 	optFloat(&d->maximumLinearSpeed);
 	optFloat(&d->isotropicInertiaTolerance);
+	// MuJoCo's mixing for scenes translated from it: the larger friction against one material,
+	// none between other shapes (frictionless condim-1 geoms).
+	next();
+	if (!isDefault())
+	{
+		char* end = NULL;
+		maxFrictionMaterial = strtoull(token, &end, 16);
+		if (end == token || *end) fail("u64 expected");
+		d->frictionCallback = maxFrictionAgainstMaterial;
+	}
 	// Sleep, continuous collision and contact recycling read state the lane does not carry: sleep
 	// times and islands, sweeps, and contacts' cached relative poses.
 	d->enableSleep = false;
@@ -162,6 +177,7 @@ static void readBody(int i)
 }
 
 // shape body kind geometry... density friction restitution rollingResistance groupIndex categoryBits maskBits
+//   userMaterialId
 //   capsule: c1(3) c2(3) radius; sphere: center(3) radius; box: halfExtents(3)
 static void readShape(int i)
 {
@@ -197,6 +213,7 @@ static void readShape(int i)
 	next(); if (!isDefault()) d->filter.groupIndex = atoi(token);
 	optU64(&d->filter.categoryBits);
 	optU64(&d->filter.maskBits);
+	optU64(&d->baseMaterial.userMaterialId);
 }
 
 // joint kind bodyA bodyB frameA(7) frameB(7) collideConnected constraintHertz constraintDampingRatio params...
@@ -351,6 +368,28 @@ static int jointFloats(b3JointSim* sim, float** out)
 	return n;
 }
 
+// A contact's convex cache (b3ContactCache: the simplex cache warm-starting b3ShapeDistance for a hull
+// against a sphere or capsule, or the SAT cache for two hulls) as its raw 32-bit words.
+#define CACHE_WORDS ( (int)( sizeof( b3ContactCache ) / sizeof( uint32_t ) ) )
+_Static_assert( sizeof( b3ContactCache ) == 16, "bin/step.ts CACHE_WORDS carries four words" );
+static void readCache(b3ContactCache* cache)
+{
+	uint32_t words[CACHE_WORDS];
+	for (int k = 0; k < CACHE_WORDS; ++k)
+	{
+		char* end = NULL;
+		words[k] = (uint32_t)strtoul(next(), &end, 16);
+		if (end == token || *end || strlen(token) != 8) fail("cache word is not eight hexadecimal digits");
+	}
+	memcpy(cache, words, sizeof(words));
+}
+static void putCache(const b3ContactCache* cache)
+{
+	uint32_t words[CACHE_WORDS];
+	memcpy(words, cache, sizeof(words));
+	for (int k = 0; k < CACHE_WORDS; ++k) printf(" %08x", words[k]);
+}
+
 static void writeResult(b3World* world)
 {
 	for (int i = 0; i < scene.bodyCount; ++i)
@@ -390,7 +429,9 @@ static void writeResult(b3World* world)
 		b3Contact* contact = world->contacts.data + i;
 		if (contact->contactId != i) continue;
 		int touching = (contact->flags & b3_contactTouchingFlag) != 0;
-		printf("contact %d %d %d %d %d %d", i, contact->shapeIdA, contact->shapeIdB, touching, contact->colorIndex, contact->manifoldCount);
+		printf("contact %d %d %d %d %d", i, contact->shapeIdA, contact->shapeIdB, touching, contact->colorIndex);
+		putCache(&contact->convexContact.cache);
+		printf(" %d", contact->manifoldCount);
 		for (int m = 0; m < contact->manifoldCount; ++m)
 		{
 			b3Manifold* manifold = contact->manifolds + m;
@@ -453,12 +494,12 @@ static void addToColor(b3World* world, b3Contact* contact, int wanted)
 }
 
 // step
-// bodies: cx cy cz qx qy qz qw vx vy vz wx wy wz fx fy fz tx ty tz, per body
+// bodies: ox oy oz cx cy cz qx qy qz qw vx vy vz wx wy wz fx fy fz tx ty tz, per body
 // joints: the impulses of jointFloats, per joint
 // fat: lx ly lz ux uy uz, per shape
 // pool nextIndex freeCount free...
 // contacts count, then per contact: id shapeA shapeB touching color pointCount
-//   (featureId normalImpulse) per point, frictionImpulse(3) twistImpulse rollingImpulse(3)
+//   (featureId normalImpulse) per point, frictionImpulse(3) twistImpulse rollingImpulse(3) cache words
 static void loadAndStep(void)
 {
 	b3WorldId worldId = buildWorld();
@@ -466,16 +507,17 @@ static void loadAndStep(void)
 
 	for (int i = 0; i < scene.bodyCount; ++i)
 	{
+		b3Vec3 o = readVec3();
 		b3Vec3 c = readVec3();
 		b3Quat q = readQuat();
 		b3Vec3 v = readVec3(), w = readVec3(), force = readVec3(), torque = readVec3();
 		b3Body* body = b3Array_Get(world->bodies, i);
 		if (body->type == b3_staticBody) continue;
 		b3BodySim* sim = b3GetBodySim(world, body);
-		// The origin as b3FinalizeBodiesTask derives it from the center of mass.
+		// The origin is state: b3FinalizeBodiesTask derives it from the center of mass once, with
+		// the library's rounding, and every later read takes the stored value.
 		b3Pos center = { c.x, c.y, c.z };
-		b3Pos origin = b3OffsetPos(center, b3Neg(b3RotateVector(q, sim->localCenter)));
-		b3Body_SetTransform(bodyIds[i], origin, q);
+		b3Body_SetTransform(bodyIds[i], (b3Pos){ o.x, o.y, o.z }, q);
 		sim->center = center;
 		sim->center0 = center;
 		b3Body_SetLinearVelocity(bodyIds[i], v);
@@ -539,6 +581,7 @@ static void loadAndStep(void)
 		b3Vec3 friction = readVec3();
 		float twist = readFloat();
 		b3Vec3 rolling = readVec3();
+		readCache(&contact->convexContact.cache);
 		if (!touching)
 		{
 			if (color != B3_NULL_INDEX) fail("a non-touching contact has no color");

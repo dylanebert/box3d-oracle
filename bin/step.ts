@@ -17,6 +17,8 @@ export interface StepWorld {
   contactSpeed?: number;
   maximumLinearSpeed?: number;
   isotropicInertiaTolerance?: number;
+  /** MuJoCo's friction mixing: pairs with a shape of this material take the larger friction, others none. */
+  maxFrictionMaterial?: bigint;
   timeStep: number;
   subStepCount: number;
 }
@@ -38,6 +40,7 @@ export type StepShapeDef = {
   groupIndex?: number;
   categoryBits?: bigint;
   maskBits?: bigint;
+  userMaterialId?: bigint;
 } & ({ kind: "capsule"; center1: Vec3; center2: Vec3; radius: number } | { kind: "sphere"; center: Vec3; radius: number } | { kind: "box"; halfExtents: Vec3 });
 type JointBase = { bodyA: number; bodyB: number; localFrameA?: Frame; localFrameB?: Frame; collideConnected?: boolean; constraintHertz?: number; constraintDampingRatio?: number };
 export type StepJointDef = JointBase & (
@@ -57,10 +60,14 @@ export const JOINT_IMPULSES = {
   filter: [],
 } as const;
 
+/** 32-bit words in a contact's convex cache, sizeof(b3ContactCache) / 4 at 3362633. */
+export const CACHE_WORDS = 4;
+
 /** Box3D's overflow color; a non-touching contact has color -1. */
 export const OVERFLOW_COLOR = 23;
 
-export interface StepBodyState { center: Vec3; rotation: Quat; linearVelocity: Vec3; angularVelocity: Vec3; force?: Vec3; torque?: Vec3 }
+/** `origin` is b3BodySim.transform.p, which upstream stores beside the center of mass. */
+export interface StepBodyState { origin: Vec3; center: Vec3; rotation: Quat; linearVelocity: Vec3; angularVelocity: Vec3; force?: Vec3; torque?: Vec3 }
 export interface StepContactState {
   id: number;
   shapeA: number;
@@ -71,6 +78,9 @@ export interface StepContactState {
   frictionImpulse: Vec3;
   twistImpulse: number;
   rollingImpulse: Vec3;
+  /** The contact's b3ContactCache as raw 32-bit words (`CACHE_WORDS` of them): the simplex cache that
+   * warm-starts b3ShapeDistance for a hull against a sphere or capsule. All zero for a new contact. */
+  cache: number[];
 }
 export interface Aabb { lower: Vec3; upper: Vec3 }
 /** Everything a step reads beyond the scene: contacts ascend by id and with the free ids cover the pool. */
@@ -89,6 +99,7 @@ export interface StepResultContact {
   shapeB: number;
   touching: boolean;
   color: number;
+  cache: number[];
   /** With the contact's mixed materials, which upstream refreshes with every manifold. */
   manifold?: { normal: Vec3; points: StepManifoldPoint[]; frictionImpulse: Vec3; twistImpulse: number; rollingImpulse: Vec3; friction: number; restitution: number; rollingResistance: number };
 }
@@ -125,12 +136,12 @@ export function encodeScene(scene: StepScene): string {
   const w = scene.world;
   const lines = [
     `scene ${scene.bodies.length} ${scene.shapes.length} ${scene.joints.length}`,
-    `world ${vec(w.gravity)} ${opt(w.restitutionThreshold)} ${optInt(w.restitutionIterations)} ${opt(w.contactHertz)} ${opt(w.contactDampingRatio)} ${opt(w.contactSpeed)} ${opt(w.maximumLinearSpeed)} ${opt(w.isotropicInertiaTolerance)} ${f(w.timeStep)} ${w.subStepCount}`,
+    `world ${vec(w.gravity)} ${opt(w.restitutionThreshold)} ${optInt(w.restitutionIterations)} ${opt(w.contactHertz)} ${opt(w.contactDampingRatio)} ${opt(w.contactSpeed)} ${opt(w.maximumLinearSpeed)} ${opt(w.isotropicInertiaTolerance)} ${optU64(w.maxFrictionMaterial)} ${f(w.timeStep)} ${w.subStepCount}`,
   ];
   for (const b of scene.bodies) lines.push(`body ${BODY_TYPES[b.type]} ${vec(b.position)} ${vec(b.rotation)} ${opt(b.linearDamping)} ${opt(b.angularDamping)} ${opt(b.gravityScale)} ${optBool(b.allowFastRotation)}`);
   for (const s of scene.shapes) {
     const geometry = s.kind === "capsule" ? `${vec(s.center1)} ${vec(s.center2)} ${f(s.radius)}` : s.kind === "sphere" ? `${vec(s.center)} ${f(s.radius)}` : vec(s.halfExtents);
-    lines.push(`shape ${s.body} ${SHAPE_KINDS[s.kind]} ${geometry} ${opt(s.density)} ${opt(s.friction)} ${opt(s.restitution)} ${opt(s.rollingResistance)} ${optInt(s.groupIndex)} ${optU64(s.categoryBits)} ${optU64(s.maskBits)}`);
+    lines.push(`shape ${s.body} ${SHAPE_KINDS[s.kind]} ${geometry} ${opt(s.density)} ${opt(s.friction)} ${opt(s.restitution)} ${opt(s.rollingResistance)} ${optInt(s.groupIndex)} ${optU64(s.categoryBits)} ${optU64(s.maskBits)} ${optU64(s.userMaterialId)}`);
   }
   for (const j of scene.joints) {
     const a = j.localFrameA ?? IDENTITY, b = j.localFrameB ?? IDENTITY;
@@ -148,7 +159,7 @@ export function encodeState(scene: StepScene, state: StepState): string {
   if (state.bodies.length !== scene.bodies.length || state.joints.length !== scene.joints.length || state.fatAabbs.length !== scene.shapes.length) throw new Error("step state does not match its scene's counts");
   const lines = ["step"];
   const zero: Vec3 = [0, 0, 0];
-  for (const b of state.bodies) lines.push(`${vec(b.center)} ${vec(b.rotation)} ${vec(b.linearVelocity)} ${vec(b.angularVelocity)} ${vec(b.force ?? zero)} ${vec(b.torque ?? zero)}`);
+  for (const b of state.bodies) lines.push(`${vec(b.origin)} ${vec(b.center)} ${vec(b.rotation)} ${vec(b.linearVelocity)} ${vec(b.angularVelocity)} ${vec(b.force ?? zero)} ${vec(b.torque ?? zero)}`);
   state.joints.forEach((impulses, i) => {
     if (impulses.length !== JOINT_IMPULSES[scene.joints[i].kind].length) throw new Error(`joint ${i} carries ${impulses.length} impulses, not ${JOINT_IMPULSES[scene.joints[i].kind].length}`);
     lines.push(vec(impulses));
@@ -158,7 +169,9 @@ export function encodeState(scene: StepScene, state: StepState): string {
   lines.push(`contacts ${state.contacts.length}`);
   for (const c of state.contacts) {
     const points = c.points.map((p) => `${p.featureId >>> 0} ${f(p.normalImpulse)}`).join(" ");
-    lines.push(`${c.id} ${c.shapeA} ${c.shapeB} ${c.touching ? 1 : 0} ${c.color} ${c.points.length} ${points} ${vec(c.frictionImpulse)} ${f(c.twistImpulse)} ${vec(c.rollingImpulse)}`.replace(/ +/g, " "));
+    if (c.cache.length !== CACHE_WORDS) throw new Error(`contact ${c.id} cache carries ${c.cache.length} words, not ${CACHE_WORDS}`);
+    const cache = c.cache.map((word) => (word >>> 0).toString(16).padStart(8, "0")).join(" ");
+    lines.push(`${c.id} ${c.shapeA} ${c.shapeB} ${c.touching ? 1 : 0} ${c.color} ${c.points.length} ${points} ${vec(c.frictionImpulse)} ${f(c.twistImpulse)} ${vec(c.rollingImpulse)} ${cache}`.replace(/ +/g, " "));
   }
   lines.push("end");
   return `${lines.join("\n")}\n`;
@@ -178,7 +191,9 @@ export function decodeResult(lines: string[]): StepResult {
     else if (tag === "fat") result.fatAabbs.push({ lower: v3(), upper: v3() });
     else if (tag === "pool") { const next = int(); const count = int(); result.pool = { next, free: words.slice(2, 2 + count).map(Number) }; }
     else if (tag === "contact") {
-      const id = int(), shapeA = int(), shapeB = int(), touching = int() === 1, color = int(), manifoldCount = int();
+      const id = int(), shapeA = int(), shapeB = int(), touching = int() === 1, color = int();
+      const cache = Array.from({ length: CACHE_WORDS }, () => Number.parseInt(words[i++], 16));
+      const manifoldCount = int();
       if (manifoldCount > 1) throw new Error("the step lane carries convex contacts, one manifold each");
       let manifold: StepResultContact["manifold"];
       if (manifoldCount === 1) {
@@ -186,7 +201,7 @@ export function decodeResult(lines: string[]): StepResult {
         const points = Array.from({ length: int() }, () => ({ featureId: Number(words[i++]), anchorA: v3(), anchorB: v3(), separation: num(), normalImpulse: num(), totalNormalImpulse: num() }));
         manifold = { normal, points, frictionImpulse: v3(), twistImpulse: num(), rollingImpulse: v3(), friction: num(), restitution: num(), rollingResistance: num() };
       }
-      result.contacts.push({ id, shapeA, shapeB, touching, color, manifold });
+      result.contacts.push({ id, shapeA, shapeB, touching, color, cache, manifold });
     } else throw new Error(`unexpected step oracle line: ${line}`);
   }
   return result;
@@ -197,7 +212,7 @@ export function nextState(result: StepResult, applied: { force?: Vec3; torque?: 
   const free = new Set(result.pool.free);
   if (result.contacts.length + free.size !== result.pool.next) throw new Error("result contacts and free ids do not cover the pool");
   return {
-    bodies: result.bodies.map((b, i) => ({ center: b.center, rotation: b.rotation, linearVelocity: b.linearVelocity, angularVelocity: b.angularVelocity, ...applied[i] })),
+    bodies: result.bodies.map((b, i) => ({ origin: b.origin, center: b.center, rotation: b.rotation, linearVelocity: b.linearVelocity, angularVelocity: b.angularVelocity, ...applied[i] })),
     joints: result.joints.map((j) => j.impulses),
     fatAabbs: result.fatAabbs,
     pool: result.pool,
@@ -211,6 +226,7 @@ export function nextState(result: StepResult, applied: { force?: Vec3; torque?: 
       frictionImpulse: c.manifold?.frictionImpulse ?? [0, 0, 0],
       twistImpulse: c.manifold?.twistImpulse ?? 0,
       rollingImpulse: c.manifold?.rollingImpulse ?? [0, 0, 0],
+      cache: c.cache,
     })),
   };
 }
