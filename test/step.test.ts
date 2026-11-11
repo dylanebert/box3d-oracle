@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { entityOf, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, perturb, perturbScene, SPREAD_SCALE, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
+import { entityOf, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, perturb, perturbScene, quantities, rotationAngle, SPREAD_SCALE, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
 
 // The pinned official Box3D the step lane is held at; building it fetches official main once into the cache.
 const SHA = "336263320469e5e9febfe18697ab562488f7e97a";
@@ -255,6 +255,23 @@ test("a spread perturbs every continuous input by at most 2^-23 and measures ups
   expect(result).toEqual(await oracle.step(state));
   for (const [key, value] of spread) expect(spreadAll.get(key)!).toBeGreaterThanOrEqual(value);
   expect(spread.get("bodies.0.center.1")).toBe(0);
+  // Each vector's spread is the largest norm of one run's change, so it lies between its largest
+  // component spread and the norm of its component spreads; a rotation's is an angle.
+  const { vectors, vectorsAll } = await oracle.stepWithSpread(state);
+  const groups = quantities(scene, result);
+  expect(groups.some((g) => g.key.startsWith("joints.") && g.members.length === 3)).toBe(true);
+  expect(groups.some((g) => g.key.endsWith(".frictionImpulse"))).toBe(true);
+  for (const g of groups) {
+    const v = vectors.get(g.key) ?? 0;
+    expect(vectorsAll.get(g.key) ?? 0).toBeGreaterThanOrEqual(v);
+    if (g.rotation) continue;
+    const parts = g.members.map((k) => spread.get(k) ?? 0);
+    expect(v).toBeGreaterThanOrEqual(Math.max(...parts) * (1 - 1e-12));
+    expect(v).toBeLessThanOrEqual(Math.hypot(...parts) * (1 + 1e-12));
+  }
+  expect(vectors.get("bodies.0.center")).toBe(0);
+  expect(vectors.get("bodies.3.rotation")!).toBeGreaterThan(0);
+  expect(rotationAngle([0, 0, Math.sin(0.05), Math.cos(0.05)], [0, 0, 0, -1])).toBeCloseTo(0.1, 12);
   expect(Math.max(...[0, 1, 2].map((k) => spread.get(`bodies.3.linearVelocity.${k}`)!))).toBeGreaterThan(0);
 }, 60_000);
 

@@ -360,6 +360,52 @@ export function continuousValues(result: StepResult): Map<string, number> {
   return values;
 }
 
+/** A quantity compared by its own geometry: a vector by its Euclidean norm, a rotation by its angle.
+ * `members` are its continuous value keys in order; a scalar is not listed. */
+export interface Quantity { key: string; members: string[]; rotation: boolean }
+
+/** The scene's vector and rotation quantities in a result: bodies' origin, center and velocities (and
+ * rotation), fat AABB corners, joints' vector impulses by JOINT_IMPULSES's names, contacts' normal,
+ * anchors, friction and rolling impulses. */
+export function quantities(scene: StepScene, result: StepResult): Quantity[] {
+  const out: Quantity[] = [];
+  const vec = (key: string, n = 3, rotation = false) => out.push({ key, members: Array.from({ length: n }, (_, k) => `${key}.${k}`), rotation });
+  result.bodies.forEach((_, i) => {
+    for (const field of ["origin", "center", "linearVelocity", "angularVelocity"]) vec(`bodies.${i}.${field}`);
+    vec(`bodies.${i}.rotation`, 4, true);
+  });
+  result.fatAabbs.forEach((_, s) => { vec(`fatAabbs.${s}.lower`); vec(`fatAabbs.${s}.upper`); });
+  result.joints.forEach((_, i) => {
+    const names: readonly string[] = JOINT_IMPULSES[scene.joints[i].kind];
+    const groups = new Map<string, string[]>();
+    names.forEach((name, k) => {
+      const dot = name.indexOf(".");
+      if (dot < 0) return;
+      const base = name.slice(0, dot);
+      groups.set(base, [...(groups.get(base) ?? []), `joints.${i}.impulses.${k}`]);
+    });
+    for (const [base, members] of groups) out.push({ key: `joints.${i}.impulses.${base}`, members, rotation: false });
+  });
+  for (const c of result.contacts) {
+    const m = c.manifold;
+    if (!m) continue;
+    const key = `contacts.${c.id}.manifold`;
+    vec(`${key}.normal`);
+    m.points.forEach((_, k) => { vec(`${key}.points.${k}.anchorA`); vec(`${key}.points.${k}.anchorB`); });
+    vec(`${key}.frictionImpulse`);
+    vec(`${key}.rollingImpulse`);
+  }
+  return out;
+}
+
+/** The angle between two unit quaternions, either sign, accurate near zero. */
+export function rotationAngle(a: readonly number[], b: readonly number[]): number {
+  const s = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3] < 0 ? -1 : 1;
+  const d = Math.hypot(...a.map((x, k) => x - s * b[k]));
+  const t = Math.hypot(...a.map((x, k) => x + s * b[k]));
+  return 4 * Math.atan2(d, t);
+}
+
 /** Upstream's discrete outcome, which a perturbation within rounding should not change. */
 const discrete = (r: StepResult) => JSON.stringify([r.contacts.map((c) => [c.id, c.shapeA, c.shapeB, c.touching, c.color, c.manifold?.points.map((q) => q.featureId)]), r.pool, r.joints.map((j) => j.color)]);
 
@@ -415,7 +461,9 @@ export function unstableDecisions(baseline: Decision[], runs: Decision[][]): { u
 /** The factor on a spread, fixed with SPREAD_DIRECTIONS before any port was held to it. */
 export const SPREAD_FACTOR = 10;
 /** `spreadAll` is the spread over every perturbed run, those whose discrete outcome changed included. */
-export interface Spread { result: StepResult; spread: Map<string, number>; spreadAll: Map<string, number>; discreteChanges: number; unstable: Unstable[]; unmatched: number }
+/** `vectors` and `vectorsAll` key each vector or rotation quantity (`quantities`) by its largest change
+ * over the same runs: the norm of a run's change, or a rotation's angle from the step's. */
+export interface Spread { result: StepResult; spread: Map<string, number>; spreadAll: Map<string, number>; vectors: Map<string, number>; vectorsAll: Map<string, number>; discreteChanges: number; unstable: Unstable[]; unmatched: number }
 
 export interface StepOracle {
   /** Box3D's mass properties for every body, from the scene's shapes. */
@@ -509,24 +557,32 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
       const spreadAll = new Map<string, number>();
       const runs: Decision[][] = [];
       let discreteChanges = 0;
+      const groups = quantities(scene, result);
+      const vectors = new Map<string, number>();
+      const vectorsAll = new Map<string, number>();
       for (let seed = 1; seed <= SPREAD_DIRECTIONS; seed++) {
         const other = await run(perturb(state, seed), others[seed - 1]);
         runs.push(other.decisions);
-        for (const [key, x] of continuousValues(other)) {
+        const values = continuousValues(other);
+        const same = discrete(other) === discrete(result);
+        for (const [key, x] of values) {
           const b = base.get(key);
-          if (b !== undefined) spreadAll.set(key, Math.max(spreadAll.get(key) ?? 0, Math.abs(x - b)));
+          if (b === undefined) continue;
+          spreadAll.set(key, Math.max(spreadAll.get(key) ?? 0, Math.abs(x - b)));
+          if (same) spread.set(key, Math.max(spread.get(key) ?? 0, Math.abs(x - b)));
         }
-        if (discrete(other) !== discrete(result)) {
-          discreteChanges++;
-          continue;
+        for (const g of groups) {
+          const b = g.members.map((k) => base.get(k));
+          const x = g.members.map((k) => values.get(k));
+          if (b.some((v) => v === undefined) || x.some((v) => v === undefined)) continue;
+          const change = g.rotation ? rotationAngle(x as number[], b as number[]) : Math.hypot(...x.map((v, k) => v! - b[k]!));
+          vectorsAll.set(g.key, Math.max(vectorsAll.get(g.key) ?? 0, change));
+          if (same) vectors.set(g.key, Math.max(vectors.get(g.key) ?? 0, change));
         }
-        for (const [key, x] of continuousValues(other)) {
-          const b = base.get(key);
-          if (b !== undefined) spread.set(key, Math.max(spread.get(key) ?? 0, Math.abs(x - b)));
-        }
+        if (!same) discreteChanges++;
       }
       const { unstable, unmatched } = unstableDecisions(result.decisions, runs);
-      return { result, spread, spreadAll, discreteChanges, unstable, unmatched };
+      return { result, spread, spreadAll, vectors, vectorsAll, discreteChanges, unstable, unmatched };
     },
     decide: (kind, operands, flip = false) =>
       exchange(`decide ${kind} ${kind === "separation" || kind === "rolling" ? vec(operands) : `${operands[0]} ${vec(operands.slice(1))}`} ${flip ? 1 : 0}\n`, async () => {
