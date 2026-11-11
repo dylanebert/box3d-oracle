@@ -468,6 +468,61 @@ function buildScenario(patched: string, build: string, table: string): { executa
   return { executable, hookDigest: hookDigest(), cmake: cmake.map((value) => value === patched ? "<patched-official-source>" : value === build ? "<scenario-build>" : value) };
 }
 
+/** The official checkout at `sha` and its disposable copy with every step-lane hook applied. */
+function patchedStepSource(sha: string, cache: string): { official: string; patched: string } {
+  const remote = join(cache, "official.git");
+  verifyReachable(OFFICIAL_SOURCE_URL, sha, remote);
+  const official = materializePristine(remote, sha);
+  verifyPristine(official, sha);
+  const patched = join(cache, "checkouts", `${sha}-step-patched`);
+  rmSync(patched, { recursive: true, force: true });
+  const { applied } = patchOfficialSource(official, patched);
+  const missing = PATCHES.filter((patch) => patch.optional && !applied.includes(patch.marker)).map((patch) => patch.marker);
+  if (missing.length) throw new OracleError(`step lane hooks have no site at ${sha}: ${missing.join(", ")}`);
+  return { official, patched };
+}
+
+/** Verificarlo's official image, pinned: v2.7.0, linux/arm64 and linux/amd64. */
+export const VERIFICARLO_IMAGE = "verificarlo/verificarlo@sha256:f024f8e3bba257305f96c1303b96889fc97374eab3321d7ed0bc4e59f95327fa";
+
+/** The step lane's upstream library compiled by Verificarlo, every float operation of Box3D's source a
+ * call into the backend chosen at run time (VFC_BACKENDS), as a local Docker image's tag, built once
+ * per SHA and adapter/hook digest. Verificarlo requires glibc and does not build on macOS, so the image
+ * runs it in Linux. The flags are the release library's (-O3, NDEBUG, contraction off, scalar math);
+ * vectorization is off, and the build fails if Verificarlo reports a vector width it leaves uninstrumented.
+ * The adapter, which only moves bits and evaluates the hooks' bounds, is compiled without it. */
+export function buildStepOracleMca(sha: string): string {
+  requireFullSha(sha);
+  const member = join(import.meta.dir, "..");
+  const box3d = ["-std=gnu17", "-O3", "-DNDEBUG", "-ffp-contract=off", "-fno-vectorize", "-fno-slp-vectorize", "-fvisibility=hidden", "-DBOX3D_DISABLE_SIMD", "-DBOX3D_VALIDATE", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-I/src/box3d/include", "-I/src/box3d/src"];
+  const adapterFlags = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-DNDEBUG", "-I/src/box3d/include", "-I/src/box3d/src"];
+  const adapter = join(member, "adapter", "step.c");
+  const dockerfile = [
+    `FROM ${VERIFICARLO_IMAGE}`,
+    "COPY box3d /src/box3d",
+    "COPY step.c /src/step.c",
+    "WORKDIR /build",
+    `RUN set -e; for c in /src/box3d/src/*.c; do verificarlo-c ${box3d.join(" ")} -c "$c" -o "$(basename "$c" .c).o" 2>> vfc.log || { cat vfc.log; exit 1; }; done; if grep -i "vector size" vfc.log; then exit 1; fi; clang ${adapterFlags.join(" ")} -c /src/step.c -o step.o; verificarlo-c *.o -lm -o /usr/local/bin/box3d-step-oracle; rm -rf /build`,
+    "",
+  ].join("\n");
+  const key = digest([sha, hookDigest(), readFileSync(adapter, "utf8"), dockerfile].join("\n")).slice(0, 16);
+  const tag = `box3d-step-oracle-mca:${sha.slice(0, 12)}-${key}`;
+  if (command("docker", ["image", "inspect", tag]).status === 0) return tag;
+  const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
+  const { official, patched } = patchedStepSource(sha, cache);
+  const context = join(cache, "step-builds", `${sha}-${key}-mca`);
+  rmSync(context, { recursive: true, force: true });
+  mkdirSync(context, { recursive: true });
+  checked("cp", ["-R", patched, join(context, "box3d")]);
+  rmSync(join(context, "box3d", ".git"), { recursive: true, force: true });
+  checked("cp", [adapter, join(context, "step.c")]);
+  writeFileSync(join(context, "Dockerfile"), dockerfile);
+  checked("docker", ["build", "--network=none", "-t", tag, context]);
+  verifyPristine(official, sha);
+  rmSync(context, { recursive: true, force: true });
+  return tag;
+}
+
 /** The step lane's executable for an official SHA, built once per SHA and adapter/hook digest under the cache. */
 export function buildStepOracle(sha: string): string {
   requireFullSha(sha);
@@ -481,15 +536,7 @@ export function buildStepOracle(sha: string): string {
   const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
   const executable = join(cache, "step-builds", `${sha}-${key}`, "box3d-step-oracle");
   if (existsSync(executable)) return executable;
-  const remote = join(cache, "official.git");
-  verifyReachable(OFFICIAL_SOURCE_URL, sha, remote);
-  const official = materializePristine(remote, sha);
-  verifyPristine(official, sha);
-  const patched = join(cache, "checkouts", `${sha}-step-patched`);
-  rmSync(patched, { recursive: true, force: true });
-  const { applied } = patchOfficialSource(official, patched);
-  const missing = PATCHES.filter((patch) => patch.optional && !applied.includes(patch.marker)).map((patch) => patch.marker);
-  if (missing.length) throw new OracleError(`step lane hooks have no site at ${sha}: ${missing.join(", ")}`);
+  const { official, patched } = patchedStepSource(sha, cache);
   const build = join(cache, "step-builds", `${sha}-${key}-work`);
   rmSync(build, { recursive: true, force: true });
   const generator = cmakeGenerator();

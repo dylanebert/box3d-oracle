@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { CONTACT_LANES, entityOf, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, perturb, perturbScene, quantities, rotationAngle, SPREAD_SCALE, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
+import { CONTACT_LANES, continuousValues, entityOf, MCA_RUNS, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, quantities, rotationAngle, sohierBound, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
 
 // The pinned official Box3D the step lane is held at; building it fetches official main once into the cache.
 const SHA = "336263320469e5e9febfe18697ab562488f7e97a";
@@ -265,33 +265,64 @@ test("an injection before a relax loads bodies and contact lanes; its own state 
   expect(pushed.contacts[contact.id]).not.toEqual(after.contacts[contact.id]);
 }, 60_000);
 
-test("a spread perturbs every continuous input by at most 2^-23 and measures upstream's response", async () => {
+test("the run count and bound are the paper's Bernoulli case at the fixed probability and confidence", () => {
+  // Sohier et al., Table 3: probability 0.95 at confidence 0.95 needs 59 runs.
+  expect(MCA_RUNS).toBe(59);
+  expect(sohierBound(0)).toBe(0);
+  expect(sohierBound(0.75)).toBe(1);
+  expect(sohierBound(1)).toBe(2);
+  expect(sohierBound(3e-8)).toBe(2 ** -24);
+});
+
+test("Verificarlo's build of upstream under its IEEE mode is the round-to-nearest lane bit for bit", async () => {
+  const ieee = await openStepOracle(SHA, scene, "libinterflop_mca.so --mode=ieee");
+  try {
+    for (const k of [20, 120, 200]) {
+      const state = nextState(native[k]);
+      for (const run of await ieee.randomlyRounded(state)) expect(run).toEqual(native[k + 1]);
+    }
+  } finally {
+    ieee.close();
+  }
+}, 120_000);
+
+test("randomly rounded runs differ from each other, and an independent set's mean lies within the bound of the round-to-nearest step", async () => {
   const state = nextState(native[120]);
-  const a = perturb(state, 3), b = perturb(state, 3), c = perturb(state, 4);
-  expect(a).toEqual(b);
-  expect(a).not.toEqual(c);
-  const flat = (s: StepState) => [...s.bodies.flatMap((x) => [...x.origin, ...x.center, ...x.rotation, ...x.linearVelocity, ...x.angularVelocity]), ...s.joints.flat(), ...s.contacts.flatMap((x) => [...x.points.map((p) => p.normalImpulse), ...x.frictionImpulse, x.twistImpulse, ...x.rollingImpulse])];
-  const before = flat(state), after = flat(a);
-  expect(after.every((x, i) => Math.abs(x - before[i]) <= 2 * SPREAD_SCALE * Math.abs(before[i]))).toBe(true);
-  expect(after.some((x, i) => x !== before[i])).toBe(true);
-  expect(a.contacts.map((x) => [x.id, x.color, x.points.map((p) => p.featureId), x.cache])).toEqual(state.contacts.map((x) => [x.id, x.color, x.points.map((p) => p.featureId), x.cache]));
-  const { result, spread, spreadAll } = await oracle.stepWithSpread(state);
-  expect(result).toEqual(await oracle.step(state));
+  const { result, spread, spreadAll, discreteChanges } = await oracle.stepWithSpread(state);
+  expect(result).toEqual(native[121]);
   for (const [key, value] of spread) expect(spreadAll.get(key)!).toBeGreaterThanOrEqual(value);
+  // A static body's state is not computed, so no run changes it.
   expect(spread.get("bodies.0.center.1")).toBe(0);
-  // Each vector's spread is the largest norm of one run's change, so it lies between its largest
-  // component spread and the norm of its component spreads; a rotation's is an angle.
-  const { vectors, vectorsAll } = await oracle.stepWithSpread(state);
+  const runs = await oracle.randomlyRounded(state);
+  const values = runs.map(continuousValues);
+  expect(new Set(values.map((v) => JSON.stringify([...v.values()]))).size).toBe(MCA_RUNS);
+  const base = continuousValues(result);
+  let compared = 0;
+  for (const [key, bound] of discreteChanges === 0 ? spread : spreadAll) {
+    const xs = values.map((v) => v.get(key)).filter((x) => x !== undefined) as number[];
+    if (xs.length !== MCA_RUNS) continue;
+    const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
+    expect(Math.abs(mean - base.get(key)!)).toBeLessThanOrEqual(bound);
+    if (bound > 0) compared++;
+  }
+  expect(compared).toBeGreaterThan(100);
+}, 60_000);
+
+test("a vector's spread is bounded by its components' and a rotation's is an angle", async () => {
+  const state = nextState(native[120]);
+  const { result, spread, vectors, vectorsAll } = await oracle.stepWithSpread(state);
   const groups = quantities(scene, result);
   expect(groups.some((g) => g.key.startsWith("joints.") && g.members.length === 3)).toBe(true);
   expect(groups.some((g) => g.key.endsWith(".frictionImpulse"))).toBe(true);
+  // A run's change norm lies between its largest component change and the norm of its components'
+  // largest changes; each is then rounded up to a power of two, at most doubling it.
   for (const g of groups) {
     const v = vectors.get(g.key) ?? 0;
     expect(vectorsAll.get(g.key) ?? 0).toBeGreaterThanOrEqual(v);
     if (g.rotation) continue;
     const parts = g.members.map((k) => spread.get(k) ?? 0);
-    expect(v).toBeGreaterThanOrEqual(Math.max(...parts) * (1 - 1e-12));
-    expect(v).toBeLessThanOrEqual(Math.hypot(...parts) * (1 + 1e-12));
+    expect(v).toBeGreaterThanOrEqual(Math.max(...parts));
+    expect(v).toBeLessThanOrEqual(2 * Math.hypot(...parts));
   }
   expect(vectors.get("bodies.0.center")).toBe(0);
   expect(vectors.get("bodies.3.rotation")!).toBeGreaterThan(0);
@@ -299,35 +330,8 @@ test("a spread perturbs every continuous input by at most 2^-23 and measures ups
   expect(Math.max(...[0, 1, 2].map((k) => spread.get(`bodies.3.linearVelocity.${k}`)!))).toBeGreaterThan(0);
 }, 60_000);
 
-test("a spread's runs also perturb every shape's continuous geometry by at most 2^-23, nothing discrete", async () => {
-  const a = perturbScene(scene, 3), b = perturbScene(scene, 3), c = perturbScene(scene, 4);
-  expect(a).toEqual(b);
-  expect(a).not.toEqual(c);
-  const geometry = (x: StepScene) => x.shapes.flatMap((s) => (s.kind === "capsule" ? [...s.center1, ...s.center2, s.radius] : s.kind === "sphere" ? [...s.center, s.radius] : [...s.halfExtents]));
-  const before = geometry(scene), after = geometry(a);
-  expect(after.every((x, i) => Math.abs(x - before[i]) <= 2 * SPREAD_SCALE * Math.abs(before[i]))).toBe(true);
-  expect(after.some((x, i) => x !== before[i])).toBe(true);
-  const rest = (x: StepScene) => ({ ...x, shapes: x.shapes.map(({ body, kind, density, friction, restitution, rollingResistance }) => ({ body, kind, density, friction, restitution, rollingResistance })) });
-  expect(rest(a)).toEqual(rest(scene));
-  // The state's and the geometry's draws are independent: the first geometry value is not scaled as
-  // the first state value of the same seed.
-  const state = nextState(native[120]);
-  const scaleState = perturb(state, 3).bodies[0].origin[1] / state.bodies[0].origin[1];
-  const scaleGeometry = (a.shapes[0] as { halfExtents: number[] }).halfExtents[0] / 20;
-  expect(scaleState).not.toBe(scaleGeometry);
-  // A dynamic body's response to geometry alone: the same state on a perturbed scene moves it.
-  const lane = await openStepOracle(SHA, a);
-  try {
-    const moved = await lane.step(state);
-    const base = await oracle.step(state);
-    expect(moved.bodies.some((x, i) => x.linearVelocity.some((v, k) => v !== base.bodies[i].linearVelocity[k]))).toBe(true);
-  } finally {
-    lane.close();
-  }
-}, 60_000);
-
 // Sentinel: every hooked decision reports its closest approach, a decision is unstable when ten times
-// its margin's spread over the perturbed runs (or its local bound) reaches its threshold, and a flip
+// its margin's spread over the randomly rounded runs (or its local bound) reaches its threshold, and a flip
 // with that window changes upstream's step.
 test("decisions unstable by their spread are reported and flip within their window", async () => {
   let checked = 0;
@@ -336,7 +340,7 @@ test("decisions unstable by their spread are reported and flip within their wind
     const { result, unstable } = await oracle.stepWithSpread(state);
     expect(result.decisions.length).toBeGreaterThan(0);
     for (const ill of result.illConditioned) expect(unstable.some((u) => u.kind === ill.kind && u.id === ill.id)).toBe(true);
-    for (const u of unstable) expect(u.otherSideRuns).toBeLessThanOrEqual(8);
+    for (const u of unstable) expect(u.otherSideRuns).toBeLessThanOrEqual(MCA_RUNS);
     const spreadOnly = unstable.find((u) => u.window > u.bound);
     if (!spreadOnly) continue;
     const flipped = await oracle.step({ ...state, flip: [entityOf(spreadOnly)] });

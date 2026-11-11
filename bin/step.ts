@@ -1,6 +1,6 @@
 // Client for the step lane (adapter/step.c): a scene once, then one b3World_Step per request from a
 // complete loaded state. Numbers cross as float32 bits; an omitted optional field is upstream's default.
-import { buildStepOracle } from "./oracle";
+import { buildStepOracle, buildStepOracleMca } from "./oracle";
 
 export type Vec3 = [number, number, number];
 /** x, y, z, w. */
@@ -301,58 +301,32 @@ export function nextState(result: StepResult, applied: { force?: Vec3; torque?: 
   };
 }
 
-/** Backward error analysis (Higham): a backward-stable step is the exact step of an input perturbed by
- * about an ulp, so the spread a port may legitimately show is upstream's response to such inputs. The
- * spread runs upstream's step from the state with every continuous input scaled by 1 + u 2^-23, u
- * uniform in [-1, 1) and independent per value, in SPREAD_DIRECTIONS seeded directions fixed here. Shape
- * geometry is such an input too: each direction also runs on its own perturbScene. */
-export const SPREAD_DIRECTIONS = 8;
-export const SPREAD_SCALE = 2 ** -23;
+/** The spread is Monte Carlo arithmetic (Stott Parker): upstream's step run MCA_RUNS times with every
+ * float operation of Box3D's source randomly rounded through Verificarlo's MCA backend in random
+ * rounding mode at binary32's own 24-bit virtual precision, which rounds each inexact result to one of
+ * its two neighbouring floats with probability by distance and leaves exact results exact. Square roots
+ * and libm calls are not instrumented and round to nearest, their operands and consumers randomized.
+ * The run count and bound are the general (Bernoulli) case of Sohier et al., "Confidence Intervals
+ * for Stochastic Arithmetic" (arXiv 1807.09655), section 5, with the round-to-nearest step as reference:
+ * when n = ceil(ln(1 - MCA_CONFIDENCE) / ln(MCA_PROBABILITY)) runs all change a quantity by less than a
+ * bound, a randomly rounded step changes it by less with probability MCA_PROBABILITY at confidence
+ * MCA_CONFIDENCE, with no assumption on its distribution. Both are fixed here before any scene ran. */
+export const MCA_PROBABILITY = 0.95;
+export const MCA_CONFIDENCE = 0.95;
+/** 59, the paper's Table 3 entry for this probability and confidence. */
+export const MCA_RUNS = Math.ceil(Math.log(1 - MCA_CONFIDENCE) / Math.log(MCA_PROBABILITY));
+export const MCA_BACKEND = "libinterflop_mca.so --mode=rr --precision-binary32=24 --precision-binary64=53";
+/** Processes the runs are spread over, lane k seeded k + 1, run r on lane r mod MCA_LANES: a fixed
+ * request sequence draws the same runs. */
+export const MCA_LANES = 12;
 
-function random(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** The state with every continuous input (body origins, centers, rotations, velocities, forces and
- * torques, joint impulses, contacts' normal, friction, twist and rolling impulses) perturbed by
- * relative amounts of up to 2^-23 from `seed`. Ids, colors, feature ids, caches, fat AABBs and the
- * pool are discrete or broadphase state and stay as they are. */
-export function perturb(state: StepState, seed: number): StepState {
-  const next = random(seed);
-  const p = (x: number) => Math.fround(x * (1 + (2 * next() - 1) * SPREAD_SCALE));
-  const v = (xs: readonly number[]) => xs.map(p);
-  return {
-    ...state,
-    bodies: state.bodies.map((b) => ({ origin: v(b.origin) as Vec3, center: v(b.center) as Vec3, rotation: v(b.rotation) as Quat, linearVelocity: v(b.linearVelocity) as Vec3, angularVelocity: v(b.angularVelocity) as Vec3, force: v(b.force ?? [0, 0, 0]) as Vec3, torque: v(b.torque ?? [0, 0, 0]) as Vec3 })),
-    joints: state.joints.map(v),
-    contacts: state.contacts.map((c) => ({ ...c, points: c.points.map((q) => ({ featureId: q.featureId, normalImpulse: p(q.normalImpulse) })), frictionImpulse: v(c.frictionImpulse) as Vec3, twistImpulse: p(c.twistImpulse), rollingImpulse: v(c.rollingImpulse) as Vec3 })),
-  };
-}
-
-/** Scene geometry is as much an input as state (scene geometry rounds as state does), so each perturbed run
- * also runs on a scene whose shapes' continuous geometry (capsule and sphere centers and radii, box half
- * extents) is perturbed by the same 2^-23 relative amounts, drawn per seed from a stream independent of
- * the state's. Kinds, bodies, materials, filters and everything discrete stay. */
-export function perturbScene(scene: StepScene, seed: number): StepScene {
-  const next = random(seed + 0x9e3779b9);
-  const p = (x: number) => Math.fround(x * (1 + (2 * next() - 1) * SPREAD_SCALE));
-  const v = (xs: Vec3) => xs.map(p) as Vec3;
-  return {
-    ...scene,
-    shapes: scene.shapes.map((s) =>
-      s.kind === "capsule"
-        ? { ...s, center1: v(s.center1), center2: v(s.center2), radius: p(s.radius) }
-        : s.kind === "sphere"
-          ? { ...s, center: v(s.center), radius: p(s.radius) }
-          : { ...s, halfExtents: v(s.halfExtents) },
-    ),
-  };
+/** The paper's Bernoulli significance bound 2^-s, s the largest integer with every run's change
+ * |Z_i| < 2^-s: the smallest power of two above the largest change, zero when none changed. */
+export function sohierBound(largest: number): number {
+  if (largest === 0) return 0;
+  let bound = 2 ** (Math.floor(Math.log2(largest)) + 1);
+  while (bound <= largest) bound *= 2;
+  return bound;
 }
 
 /** A result's continuous values by key: `bodies.<i>.<field>.<k>`, `joints.<i>.impulses.<k>`,
@@ -428,21 +402,22 @@ export function rotationAngle(a: readonly number[], b: readonly number[]): numbe
   return 4 * Math.atan2(d, t);
 }
 
-/** Upstream's discrete outcome, which a perturbation within rounding should not change. */
+/** Upstream's discrete outcome, which rounding should not change. */
 const discrete = (r: StepResult) => JSON.stringify([r.contacts.map((c) => [c.id, c.shapeA, c.shapeB, c.touching, c.color, c.manifold?.points.map((q) => q.featureId)]), r.pool, r.joints.map((j) => j.color)]);
 
 /** A decision ill-conditioned at this state, per kind and entity: for some occurrence, SPREAD_FACTOR
- * times its margin's spread over the perturbed runs, or its local bound, reaches its threshold. `margin`,
- * `bound`, `spread` and `window` are the closest such occurrence's; `otherSideRuns` counts the runs in
- * which some occurrence of it ended on the other side of its threshold from the baseline's. */
+ * times its margin's spread (sohierBound over the randomly rounded runs), or its local bound, reaches
+ * its threshold. `margin`, `bound`, `spread` and `window` are the closest such occurrence's;
+ * `otherSideRuns` counts the runs in which some occurrence of it ended on the other side of its
+ * threshold from the baseline's. */
 export interface Unstable { kind: DecisionKind; id: number; margin: number; bound: number; spread: number; window: number; otherSideRuns: number }
 
 /** An occurrence's key: its place in upstream's loop, never its visit order. */
 export const occurrenceKey = (d: Decision) => `${d.kind} ${d.id} ${d.substep} ${d.stage} ${d.point}`;
 
-/** The unstable decisions of a baseline step given its perturbed runs, occurrence by occurrence. Only
- * occurrences whose keys exist in both the baseline and a run are compared; `unmatched` counts those
- * present in only one, which never count as the other side and never feed a spread. */
+/** The unstable decisions of a baseline step given its randomly rounded runs, occurrence by occurrence.
+ * Only occurrences whose keys exist in both the baseline and a run are compared; `unmatched` counts
+ * those present in only one, which never count as the other side and never feed a spread. */
 export function unstableDecisions(baseline: Decision[], runs: Decision[][]): { unstable: Unstable[]; unmatched: number } {
   const key = occurrenceKey;
   const occurrences = new Map(baseline.map((d) => [key(d), { decision: d, margin: d.quantity - d.threshold, spread: 0 }]));
@@ -467,7 +442,8 @@ export function unstableDecisions(baseline: Decision[], runs: Decision[][]): { u
     unmatched += occurrences.size - seen.size;
   }
   const unstable = new Map<string, Unstable>();
-  for (const { decision, margin, spread } of occurrences.values()) {
+  for (const { decision, margin, spread: largest } of occurrences.values()) {
+    const spread = sohierBound(largest);
     const window = Math.max(decision.bound, SPREAD_FACTOR * spread);
     if (Math.abs(margin) > window) continue;
     const entity = `${decision.kind} ${decision.id}`;
@@ -480,11 +456,15 @@ export function unstableDecisions(baseline: Decision[], runs: Decision[][]): { u
   }
   return { unstable: [...unstable.values()], unmatched };
 }
-/** The factor on a spread, fixed with SPREAD_DIRECTIONS before any port was held to it. */
+/** The factor on a spread, fixed before any port was held to it and carried over from the perturbed-input
+ * spread this replaced: a margin over each quantity's bound, which holds at MCA_PROBABILITY for one
+ * quantity, where a schedule holds thousands at once with a port whose rounding is not a randomly
+ * rounded run of upstream's own operations. */
 export const SPREAD_FACTOR = 10;
-/** `spreadAll` is the spread over every perturbed run, those whose discrete outcome changed included. */
-/** `vectors` and `vectorsAll` key each vector or rotation quantity (`quantities`) by its largest change
- * over the same runs: the norm of a run's change, or a rotation's angle from the step's. */
+/** `spread` keys each continuous value by sohierBound of its largest change from the round-to-nearest
+ * step over the runs whose discrete outcome equals the step's; `spreadAll` over every run. */
+/** `vectors` and `vectorsAll` key each vector or rotation quantity (`quantities`) by the same bound of
+ * its largest change over the same runs: the norm of a run's change, or a rotation's angle from the step's. */
 export interface Spread { result: StepResult; spread: Map<string, number>; spreadAll: Map<string, number>; vectors: Map<string, number>; vectorsAll: Map<string, number>; discreteChanges: number; unstable: Unstable[]; unmatched: number }
 
 export interface StepOracle {
@@ -493,11 +473,13 @@ export interface StepOracle {
   /** The scene as built, before any step. */
   initial: StepResult;
   step(state: StepState): Promise<StepResult>;
-  /** The step and its spread: per continuous value, the largest change over the SPREAD_DIRECTIONS
-   * perturbed runs whose discrete outcome equals the step's (and over all of them, `spreadAll`), how many
-   * runs' did not, and the hooked decisions ill-conditioned by their own margin's spread or local bound,
-   * with how many runs took their other side. */
+  /** The step and its spread: per continuous value, sohierBound of the largest change over the MCA_RUNS
+   * randomly rounded runs whose discrete outcome equals the step's (and over all of them, `spreadAll`),
+   * how many runs' did not, and the hooked decisions ill-conditioned by their own margin's spread or
+   * local bound, with how many runs took their other side. */
   stepWithSpread(state: StepState): Promise<Spread>;
+  /** Upstream's step from the state MCA_RUNS times under random rounding, in run order. */
+  randomlyRounded(state: StepState): Promise<StepResult[]>;
   /** The scene stepped without reloading, each step's result: what a complete load must reproduce. */
   rollout(steps: number): Promise<StepResult[]>;
   /** One decision hook on supplied operands, as `decide <kind> ...` reads them (adapter/step.c): the
@@ -508,11 +490,13 @@ export interface StepOracle {
   close(): void;
 }
 
-/** Builds (once, cached) and starts the step lane for an official Box3D SHA with one scene. */
-export async function openStepOracle(sha: string, scene: StepScene): Promise<StepOracle> {
+/** Builds (once, cached) and starts the step lane for an official Box3D SHA with one scene. The
+ * round-to-nearest step runs here; the randomly rounded runs run Verificarlo's build in Docker, under
+ * `backend` (MCA_BACKEND unless a test names another). */
+export async function openStepOracle(sha: string, scene: StepScene, backend = MCA_BACKEND): Promise<StepOracle> {
   const executable = buildStepOracle(sha);
-  const start = async (built: StepScene) => {
-    const child = Bun.spawn([executable], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+  const start = async (argv: string[]) => {
+    const child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
     const reader = child.stdout.getReader();
     const decoder = new TextDecoder();
     let buffered = "";
@@ -535,7 +519,7 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
       for (let next = await line(); next !== end; next = await line()) lines.push(next);
       return lines;
     };
-    child.stdin.write(encodeScene(built));
+    child.stdin.write(encodeScene(scene));
     child.stdin.flush();
     const ready = await until("ready");
     let queue: Promise<unknown> = Promise.resolve();
@@ -554,7 +538,7 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
     };
     return { ready, until, exchange, close };
   };
-  const main = await start(scene);
+  const main = await start([executable]);
   const { until, exchange } = main;
   const ready = main.ready;
   const initial = decodeResult(ready.filter((text) => !text.startsWith("mass ")));
@@ -563,17 +547,26 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
     const v = (k: number): Vec3 => [words[k], words[k + 1], words[k + 2]];
     return { invMass: words[0], localCenter: v(1), invInertiaLocal: [v(4), v(7), v(10)] as [Vec3, Vec3, Vec3] };
   });
-  // One lane per perturbed direction, each on its own perturbed scene, started at the first spread.
-  let perturbed: Awaited<ReturnType<typeof start>>[] | undefined;
-  const lanes = async () => (perturbed ??= await Promise.all(Array.from({ length: SPREAD_DIRECTIONS }, (_, k) => start(perturbScene(scene, k + 1)))));
+  // The randomly rounded lanes, started at the first spread.
+  let stochastic: Awaited<ReturnType<typeof start>>[] | undefined;
+  const lanes = async () => {
+    if (stochastic) return stochastic;
+    const tag = buildStepOracleMca(sha);
+    const env = (seed: number) => ["-e", `VFC_BACKENDS=${backend} --seed=${seed}`, "-e", "VFC_BACKENDS_SILENT_LOAD=True", "-e", "VFC_BACKENDS_LOGGER=False"];
+    return (stochastic = await Promise.all(Array.from({ length: MCA_LANES }, (_, k) => start(["docker", "run", "--rm", "-i", "--network=none", ...env(k + 1), tag, "box3d-step-oracle"]))));
+  };
+  const run = (s: StepState, lane = main) => lane.exchange(encodeState(scene, s), async () => decodeResult(await lane.until("end")));
+  const randomlyRounded = async (state: StepState) => {
+    const all = await lanes();
+    return Promise.all(Array.from({ length: MCA_RUNS }, (_, r) => run(state, all[r % MCA_LANES])));
+  };
   return {
     mass,
     initial,
-    step: (state) => exchange(encodeState(scene, state), async () => decodeResult(await until("end"))),
+    step: (state) => run(state),
+    randomlyRounded,
     async stepWithSpread(state) {
-      const run = (s: StepState, lane = main) => lane.exchange(encodeState(scene, s), async () => decodeResult(await lane.until("end")));
-      const others = await lanes();
-      const result = await run(state);
+      const [result, others] = await Promise.all([run(state), randomlyRounded(state)]);
       const base = continuousValues(result);
       const spread = new Map<string, number>();
       const spreadAll = new Map<string, number>();
@@ -582,8 +575,7 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
       const groups = quantities(scene, result);
       const vectors = new Map<string, number>();
       const vectorsAll = new Map<string, number>();
-      for (let seed = 1; seed <= SPREAD_DIRECTIONS; seed++) {
-        const other = await run(perturb(state, seed), others[seed - 1]);
+      for (const other of others) {
         runs.push(other.decisions);
         const values = continuousValues(other);
         const same = discrete(other) === discrete(result);
@@ -603,6 +595,7 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
         }
         if (!same) discreteChanges++;
       }
+      for (const map of [spread, spreadAll, vectors, vectorsAll]) for (const [key, largest] of map) map.set(key, sohierBound(largest));
       const { unstable, unmatched } = unstableDecisions(result.decisions, runs);
       return { result, spread, spreadAll, vectors, vectorsAll, discreteChanges, unstable, unmatched };
     },
@@ -627,7 +620,7 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
       }),
     close() {
       main.close();
-      for (const lane of perturbed ?? []) lane.close();
+      for (const lane of stochastic ?? []) lane.close();
     },
   };
 }
