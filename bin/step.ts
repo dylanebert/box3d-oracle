@@ -313,12 +313,21 @@ export function nextState(result: StepResult, applied: { force?: Vec3; torque?: 
  * with the round-to-nearest step as reference, Z = run - step. Under the Centered Normality Hypothesis
  * (section 4.1) a quantity's tolerance is |mean Z| + k sigma, sigma the sample deviation of the n runs
  * kept inflated by its one-sided chi-square bound at MCA_CONFIDENCE, sqrt((n - 1) / chi2_{1-c}(n - 1)),
- * and k the normal quantile at 1 - FAMILY_ALPHA / (2N) for the N quantities a caller compares
- * (Bonferroni, familyQuantile). Where Anderson-Darling rejects normality at 0.05 (ANDERSON_DARLING_05), or fewer
- * than eight runs are kept, the quantity falls back to the distribution-free (Bernoulli, section 5)
- * range bound, sohierBound of its largest change, which with MCA_RUNS runs holds a fresh run at
- * probability 0.99 with confidence 0.95 (the paper's Table 3). Every constant is fixed here before any
- * scene ran. */
+ * and k = familyQuantile(N), the normal quantile at 1 - FAMILY_ALPHA / (2N) for the N quantities a caller
+ * compares. Where Anderson-Darling rejects normality at 0.05 (ANDERSON_DARLING_05), or fewer than eight
+ * runs are kept, the quantity falls back to the distribution-free (Bernoulli, section 5) range bound,
+ * sohierBound of its largest change. Every constant is fixed here before any scene ran.
+ *
+ * What each bound guarantees is per quantity, as the paper's intervals are: a normal quantity's sigma
+ * bound holds at confidence 0.95 and, with k for one quantity, a fresh run at probability 0.95; a
+ * fallback quantity's range bound holds a fresh run at probability 0.99 with confidence 0.95 (Table 3).
+ * Nothing here is a family-wise guarantee over a scene's schedule: the Bonferroni k on the normal
+ * quantities is margin, the fallback quantities carry only their individual bound, and the quantities'
+ * independence is not established. Further, the chi-square inflation is per quantity (its 0.95 is not
+ * shared across the family), the mean term |mean Z| carries no confidence allowance, and Anderson-Darling
+ * not rejecting normality does not certify the tails k reaches into. What the claim cannot guarantee, a
+ * null run measures: shallot-gpu-physics's qualify-oracle holds independentRun's results, upstream's
+ * rounding alone, through each full schedule and counts its reds. */
 export const MCA_CONFIDENCE = 0.95;
 export const FAMILY_ALPHA = 0.05;
 /** 299 = ceil(ln 0.05 / ln 0.99): Table 3's count for the fallback at probability 0.99, and a row of
@@ -328,6 +337,8 @@ export const MCA_BACKEND = "libinterflop_mca.so --mode=rr --precision-binary32=2
 /** Processes the runs are spread over, lane k seeded k + 1, run r on lane r mod MCA_LANES: a fixed
  * request sequence draws the same runs. */
 export const MCA_LANES = 12;
+/** The seed of the one lane `independentRun` draws from, outside the bounds' 1..MCA_LANES. */
+export const INDEPENDENT_SEED = 1_000_001;
 
 /** The paper's Bernoulli significance bound 2^-s, s the largest integer with every run's change
  * |Z_i| < 2^-s: the smallest power of two above the largest change, zero when none changed. */
@@ -529,6 +540,9 @@ export interface StepOracle {
   stepWithSpread(state: StepState, k: number): Promise<Spread>;
   /** Upstream's step from the state MCA_RUNS times under random rounding, in run order. */
   randomlyRounded(state: StepState): Promise<StepResult[]>;
+  /** One randomly rounded step from a lane seeded outside the runs' range (INDEPENDENT_SEED), which no
+   * bound saw: a stand-in for a port whose only difference is rounding, for a null run. */
+  independentRun(state: StepState): Promise<StepResult>;
   /** sqrtf(x) as the step calls it: here, and on each randomly rounded lane in turn, MCA_RUNS times. */
   sqrtf(x: number): Promise<{ nearest: number; runs: number[] }>;
   /** The scene stepped without reloading, each step's result: what a complete load must reproduce. */
@@ -604,13 +618,14 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
   });
   // The randomly rounded lanes, started at the first spread.
   let stochastic: Awaited<ReturnType<typeof start>>[] | undefined;
-  const lanes = async () => {
-    if (stochastic) return stochastic;
+  let independent: Awaited<ReturnType<typeof start>> | undefined;
+  const startLane = (seed: number) => {
     const tag = buildStepOracleMca(sha);
     const backend = rounding.arithmetic === "random" ? MCA_BACKEND : "libinterflop_mca.so --mode=ieee";
-    const env = (seed: number) => ["-e", `VFC_BACKENDS=${backend} --seed=${seed}`, "-e", `B3_ORACLE_SQRT=${rounding.sqrt === "random" ? `random:${seed}` : "nearest"}`, "-e", "VFC_BACKENDS_SILENT_LOAD=True", "-e", "VFC_BACKENDS_LOGGER=False"];
-    return (stochastic = await Promise.all(Array.from({ length: MCA_LANES }, (_, k) => start(["docker", "run", "--rm", "-i", "--network=none", ...env(k + 1), tag, "box3d-step-oracle"]))));
+    const env = ["-e", `VFC_BACKENDS=${backend} --seed=${seed}`, "-e", `B3_ORACLE_SQRT=${rounding.sqrt === "random" ? `random:${seed}` : "nearest"}`, "-e", "VFC_BACKENDS_SILENT_LOAD=True", "-e", "VFC_BACKENDS_LOGGER=False"];
+    return start(["docker", "run", "--rm", "-i", "--network=none", ...env, tag, "box3d-step-oracle"]);
   };
+  const lanes = async () => (stochastic ??= await Promise.all(Array.from({ length: MCA_LANES }, (_, k) => startLane(k + 1))));
   const send = (request: string, lane = main) => lane.exchange(request, async () => decodeResult(await lane.until("end")));
   const run = (s: StepState, lane = main) => send(encodeState(scene, s), lane);
   const randomlyRounded = async (state: StepState) => {
@@ -623,6 +638,9 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
     initial,
     step: (state) => run(state),
     randomlyRounded,
+    async independentRun(state) {
+      return run(state, (independent ??= await startLane(INDEPENDENT_SEED)));
+    },
     async sqrtf(x) {
       const ask = (lane: typeof main) => lane.exchange(`sqrtf ${f(x)}\n`, async () => unf((await lane.until("end"))[0].split(" ")[1]));
       const all = await lanes();
@@ -676,6 +694,7 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
     close() {
       main.close();
       for (const lane of stochastic ?? []) lane.close();
+      independent?.close();
     },
   };
 }

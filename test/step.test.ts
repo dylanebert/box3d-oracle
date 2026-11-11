@@ -352,10 +352,25 @@ test("the CNH tolerance holds a fresh independent set of runs at its stated rate
   expect(normal.length).toBeGreaterThan(50);
   const exceed = (k: number) => normal.reduce((count, [key, b]) => count + fresh.filter((v) => Math.abs(v.get(key)! - base.get(key)!) > tolerance(b, k)).length, 0);
   const pairs = normal.length * fresh.length;
-  // Each quantity alone at 0.05, and the whole family of quantity-run pairs at 0.05 by Bonferroni.
+  // Each quantity alone at its stated 0.05; and, measured rather than guaranteed, none of this state's
+  // quantity-run pairs past the Bonferroni k for all of them.
   expect(exceed(familyQuantile(1)) / pairs).toBeLessThanOrEqual(0.05);
   expect(exceed(familyQuantile(pairs))).toBe(0);
   console.log(JSON.stringify({ tested: normal.length + rejected, rejected, individual: exceed(familyQuantile(1)) / pairs }));
+}, 60_000);
+
+test("an independent run is drawn outside the bounds' runs and repeats", async () => {
+  const state = nextState(native[120]);
+  const runs = (await oracle.randomlyRounded(state)).map((r) => JSON.stringify(r.bodies));
+  const independent = await oracle.independentRun(state);
+  expect(runs).not.toContain(JSON.stringify(independent.bodies));
+  expect(independent.bodies).not.toEqual(native[121].bodies);
+  const again = await openStepOracle(SHA, scene);
+  try {
+    expect(await again.independentRun(state)).toEqual(independent);
+  } finally {
+    again.close();
+  }
 }, 60_000);
 
 test("a vector's bound is its components' and a rotation's is an angle", async () => {
