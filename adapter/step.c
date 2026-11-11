@@ -1179,6 +1179,16 @@ static void decideCommand(void)
 	fflush(out);
 }
 
+// sqrtf as the step calls it, through the symbol so that a link-time wrapper sees it.
+static void sqrtfCommand(void)
+{
+	float (*volatile root)(float) = sqrtf;
+	fprintf(out, "sqrtf");
+	putFloat(root(readFloat()));
+	fprintf(out, "\nend\n");
+	fflush(out);
+}
+
 int main(void)
 {
 	out = stdout;
@@ -1199,7 +1209,8 @@ int main(void)
 		else if (strcmp(token, "rollout") == 0) rollout();
 		else if (strcmp(token, "segment") == 0) segment();
 		else if (strcmp(token, "decide") == 0) decideCommand();
-		else fail("step, rollout, segment or decide expected");
+		else if (strcmp(token, "sqrtf") == 0) sqrtfCommand();
+		else fail("step, rollout, segment, decide or sqrtf expected");
 	}
 	return 0;
 }

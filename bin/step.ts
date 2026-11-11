@@ -1,6 +1,7 @@
 // Client for the step lane (adapter/step.c): a scene once, then one b3World_Step per request from a
 // complete loaded state. Numbers cross as float32 bits; an omitted optional field is upstream's default.
 import { buildStepOracle, buildStepOracleMca } from "./oracle";
+import { ANDERSON_DARLING_05, andersonDarling, chiSquareQuantile, normalQuantile } from "./stats";
 
 export type Vec3 = [number, number, number];
 /** x, y, z, w. */
@@ -304,17 +305,25 @@ export function nextState(result: StepResult, applied: { force?: Vec3; torque?: 
 /** The spread is Monte Carlo arithmetic (Stott Parker): upstream's step run MCA_RUNS times with every
  * float operation of Box3D's source randomly rounded through Verificarlo's MCA backend in random
  * rounding mode at binary32's own 24-bit virtual precision, which rounds each inexact result to one of
- * its two neighbouring floats with probability by distance and leaves exact results exact. Square roots
- * and libm calls are not instrumented and round to nearest, their operands and consumers randomized.
- * The run count and bound are the general (Bernoulli) case of Sohier et al., "Confidence Intervals
- * for Stochastic Arithmetic" (arXiv 1807.09655), section 5, with the round-to-nearest step as reference:
- * when n = ceil(ln(1 - MCA_CONFIDENCE) / ln(MCA_PROBABILITY)) runs all change a quantity by less than a
- * bound, a randomly rounded step changes it by less with probability MCA_PROBABILITY at confidence
- * MCA_CONFIDENCE, with no assumption on its distribution. Both are fixed here before any scene ran. */
-export const MCA_PROBABILITY = 0.95;
+ * its two neighbouring floats with probability by distance and leaves exact results exact. sqrtf, the
+ * one libm call whose result Box3D's step rounds (remainderf and nextafterf are exact), is randomly
+ * rounded the same way by a link-time wrapper (adapter/mca_sqrt.c).
+ *
+ * Bounds follow Sohier et al., "Confidence Intervals for Stochastic Arithmetic" (arXiv 1807.09655),
+ * with the round-to-nearest step as reference, Z = run - step. Under the Centered Normality Hypothesis
+ * (section 4.1) a quantity's tolerance is |mean Z| + k sigma, sigma the sample deviation of the n runs
+ * kept inflated by its one-sided chi-square bound at MCA_CONFIDENCE, sqrt((n - 1) / chi2_{1-c}(n - 1)),
+ * and k the normal quantile at 1 - FAMILY_ALPHA / (2N) for the N quantities a caller compares
+ * (Bonferroni, familyQuantile). Where Anderson-Darling rejects normality at 0.05 (ANDERSON_DARLING_05), or fewer
+ * than eight runs are kept, the quantity falls back to the distribution-free (Bernoulli, section 5)
+ * range bound, sohierBound of its largest change, which with MCA_RUNS runs holds a fresh run at
+ * probability 0.99 with confidence 0.95 (the paper's Table 3). Every constant is fixed here before any
+ * scene ran. */
 export const MCA_CONFIDENCE = 0.95;
-/** 59, the paper's Table 3 entry for this probability and confidence. */
-export const MCA_RUNS = Math.ceil(Math.log(1 - MCA_CONFIDENCE) / Math.log(MCA_PROBABILITY));
+export const FAMILY_ALPHA = 0.05;
+/** 299 = ceil(ln 0.05 / ln 0.99): Table 3's count for the fallback at probability 0.99, and a row of
+ * Table 4, where the chi-square inflation of a deviation is 1.07. */
+export const MCA_RUNS = Math.ceil(Math.log(1 - MCA_CONFIDENCE) / Math.log(0.99));
 export const MCA_BACKEND = "libinterflop_mca.so --mode=rr --precision-binary32=24 --precision-binary64=53";
 /** Processes the runs are spread over, lane k seeded k + 1, run r on lane r mod MCA_LANES: a fixed
  * request sequence draws the same runs. */
@@ -327,6 +336,42 @@ export function sohierBound(largest: number): number {
   let bound = 2 ** (Math.floor(Math.log2(largest)) + 1);
   while (bound <= largest) bound *= 2;
   return bound;
+}
+
+/** The normal quantile a tolerance multiplies sigma by for `quantities` compared at once. */
+export const familyQuantile = (quantities: number) => normalQuantile(1 - FAMILY_ALPHA / (2 * Math.max(1, quantities)));
+
+const inflation = new Map<number, number>();
+/** sqrt((n - 1) / chi2_{1-c}(n - 1)): the one-sided upper confidence factor on a deviation from n runs. */
+export function deviationInflation(n: number): number {
+  let f = inflation.get(n);
+  if (f === undefined) inflation.set(n, (f = Math.sqrt((n - 1) / chiSquareQuantile(1 - MCA_CONFIDENCE, n - 1))));
+  return f;
+}
+
+/** A quantity's spread: under normality |mean| + k sigma; otherwise `range`. `tested` is false for a
+ * quantity that no run changed or too few runs kept to test; `normal` is whether the CNH bound applies. */
+export interface Bound { mean: number; sigma: number; range: number; normal: boolean; tested: boolean }
+export const tolerance = (b: Bound, k: number) => (b.normal ? b.mean + k * b.sigma : b.range);
+const MIN_KEPT = 8;
+
+/** The bound of a quantity from its runs' changes: one component per sample row (a scalar's change,
+ * a vector's change, a rotation's rotation vector), `largest` the norm or angle the range bounds. */
+export function bound(changes: readonly (readonly number[])[], largest: readonly number[]): Bound {
+  const n = changes.length;
+  const range = sohierBound(Math.max(0, ...largest));
+  if (n < MIN_KEPT) return { mean: 0, sigma: 0, range, normal: false, tested: false };
+  let variance = 0, tested = false, normal = true;
+  const mean = changes[0].map((_, c) => changes.reduce((sum, z) => sum + z[c], 0) / n);
+  for (let c = 0; c < mean.length; c++) {
+    const column = changes.map((z) => z[c]);
+    variance += column.reduce((sum, z) => sum + (z - mean[c]) ** 2, 0) / (n - 1);
+    const a = andersonDarling(column);
+    if (a === undefined) continue;
+    tested = true;
+    if (a > ANDERSON_DARLING_05) normal = false;
+  }
+  return { mean: Math.hypot(...mean), sigma: Math.sqrt(variance) * deviationInflation(n), range, normal, tested };
 }
 
 /** A result's continuous values by key: `bodies.<i>.<field>.<k>`, `joints.<i>.impulses.<k>`,
@@ -405,9 +450,9 @@ export function rotationAngle(a: readonly number[], b: readonly number[]): numbe
 /** Upstream's discrete outcome, which rounding should not change. */
 const discrete = (r: StepResult) => JSON.stringify([r.contacts.map((c) => [c.id, c.shapeA, c.shapeB, c.touching, c.color, c.manifold?.points.map((q) => q.featureId)]), r.pool, r.joints.map((j) => j.color)]);
 
-/** A decision ill-conditioned at this state, per kind and entity: for some occurrence, SPREAD_FACTOR
- * times its margin's spread (sohierBound over the randomly rounded runs), or its local bound, reaches
- * its threshold. `margin`, `bound`, `spread` and `window` are the closest such occurrence's;
+/** A decision ill-conditioned at this state, per kind and entity: for some occurrence, its margin's
+ * tolerance over the randomly rounded runs (`bound` at quantile k), or its local bound, reaches its
+ * threshold. `margin`, `bound`, `spread` and `window` are the closest such occurrence's;
  * `otherSideRuns` counts the runs in which some occurrence of it ended on the other side of its
  * threshold from the baseline's. */
 export interface Unstable { kind: DecisionKind; id: number; margin: number; bound: number; spread: number; window: number; otherSideRuns: number }
@@ -418,9 +463,9 @@ export const occurrenceKey = (d: Decision) => `${d.kind} ${d.id} ${d.substep} ${
 /** The unstable decisions of a baseline step given its randomly rounded runs, occurrence by occurrence.
  * Only occurrences whose keys exist in both the baseline and a run are compared; `unmatched` counts
  * those present in only one, which never count as the other side and never feed a spread. */
-export function unstableDecisions(baseline: Decision[], runs: Decision[][]): { unstable: Unstable[]; unmatched: number } {
+export function unstableDecisions(baseline: Decision[], runs: Decision[][], k: number): { unstable: Unstable[]; unmatched: number } {
   const key = occurrenceKey;
-  const occurrences = new Map(baseline.map((d) => [key(d), { decision: d, margin: d.quantity - d.threshold, spread: 0 }]));
+  const occurrences = new Map(baseline.map((d) => [key(d), { decision: d, margin: d.quantity - d.threshold, changes: [] as number[] }]));
   if (occurrences.size !== baseline.length) throw new Error("decision occurrences do not have unique keys");
   const otherSide = new Map<string, number>();
   let unmatched = 0;
@@ -435,16 +480,16 @@ export function unstableDecisions(baseline: Decision[], runs: Decision[][]): { u
       }
       seen.add(key(d));
       const margin = d.quantity - d.threshold;
-      o.spread = Math.max(o.spread, Math.abs(margin - o.margin));
+      o.changes.push(margin - o.margin);
       if (margin > 0 !== o.margin > 0) crossed.add(`${d.kind} ${d.id}`);
     }
     for (const entity of crossed) otherSide.set(entity, (otherSide.get(entity) ?? 0) + 1);
     unmatched += occurrences.size - seen.size;
   }
   const unstable = new Map<string, Unstable>();
-  for (const { decision, margin, spread: largest } of occurrences.values()) {
-    const spread = sohierBound(largest);
-    const window = Math.max(decision.bound, SPREAD_FACTOR * spread);
+  for (const { decision, margin, changes } of occurrences.values()) {
+    const spread = tolerance(bound(changes.map((z) => [z]), changes.map(Math.abs)), k);
+    const window = Math.max(decision.bound, spread);
     if (Math.abs(margin) > window) continue;
     const entity = `${decision.kind} ${decision.id}`;
     const prior = unstable.get(entity);
@@ -456,16 +501,20 @@ export function unstableDecisions(baseline: Decision[], runs: Decision[][]): { u
   }
   return { unstable: [...unstable.values()], unmatched };
 }
-/** The factor on a spread, fixed before any port was held to it and carried over from the perturbed-input
- * spread this replaced: a margin over each quantity's bound, which holds at MCA_PROBABILITY for one
- * quantity, where a schedule holds thousands at once with a port whose rounding is not a randomly
- * rounded run of upstream's own operations. */
-export const SPREAD_FACTOR = 10;
-/** `spread` keys each continuous value by sohierBound of its largest change from the round-to-nearest
- * step over the runs whose discrete outcome equals the step's; `spreadAll` over every run. */
-/** `vectors` and `vectorsAll` key each vector or rotation quantity (`quantities`) by the same bound of
- * its largest change over the same runs: the norm of a run's change, or a rotation's angle from the step's. */
-export interface Spread { result: StepResult; spread: Map<string, number>; spreadAll: Map<string, number>; vectors: Map<string, number>; vectorsAll: Map<string, number>; discreteChanges: number; unstable: Unstable[]; unmatched: number }
+/** A quantity's bound by key: `values` per continuous value, `vectors` per vector or rotation quantity
+ * (`quantities`), a vector by its change, a rotation by its rotation vector from the step's. */
+export interface Bounds { values: Map<string, Bound>; vectors: Map<string, Bound> }
+/** `kept` bounds each quantity over the runs whose discrete outcome equals the step's, `runsKept` of
+ * them; `all` over every run. */
+export interface Spread { result: StepResult; kept: Bounds; all: Bounds; runsKept: number; discreteChanges: number; unstable: Unstable[]; unmatched: number }
+
+/** A rotation's change as a rotation vector, 2 vec(conj(b) a) on the shorter arc. */
+function rotationVector(a: readonly number[], b: readonly number[]): number[] {
+  const [ax, ay, az, aw] = a, [bx, by, bz, bw] = b;
+  const w = bw * aw + bx * ax + by * ay + bz * az;
+  const v = [bw * ax - bx * aw - by * az + bz * ay, bw * ay - by * aw - bz * ax + bx * az, bw * az - bz * aw - bx * ay + by * ax];
+  return v.map((x) => 2 * (w < 0 ? -x : x));
+}
 
 export interface StepOracle {
   /** Box3D's mass properties for every body, from the scene's shapes. */
@@ -473,13 +522,15 @@ export interface StepOracle {
   /** The scene as built, before any step. */
   initial: StepResult;
   step(state: StepState): Promise<StepResult>;
-  /** The step and its spread: per continuous value, sohierBound of the largest change over the MCA_RUNS
-   * randomly rounded runs whose discrete outcome equals the step's (and over all of them, `spreadAll`),
-   * how many runs' did not, and the hooked decisions ill-conditioned by their own margin's spread or
-   * local bound, with how many runs took their other side. */
-  stepWithSpread(state: StepState): Promise<Spread>;
+  /** The step and its spread: each quantity's bound over the MCA_RUNS randomly rounded runs whose
+   * discrete outcome equals the step's (and over all of them), how many runs' did not, and the hooked
+   * decisions ill-conditioned by their margin's tolerance at quantile `k` or their local bound, with how
+   * many runs took their other side. */
+  stepWithSpread(state: StepState, k: number): Promise<Spread>;
   /** Upstream's step from the state MCA_RUNS times under random rounding, in run order. */
   randomlyRounded(state: StepState): Promise<StepResult[]>;
+  /** sqrtf(x) as the step calls it: here, and on each randomly rounded lane in turn, MCA_RUNS times. */
+  sqrtf(x: number): Promise<{ nearest: number; runs: number[] }>;
   /** The scene stepped without reloading, each step's result: what a complete load must reproduce. */
   rollout(steps: number): Promise<StepResult[]>;
   /** One decision hook on supplied operands, as `decide <kind> ...` reads them (adapter/step.c): the
@@ -490,10 +541,13 @@ export interface StepOracle {
   close(): void;
 }
 
+/** Which of the randomly rounded lanes' arithmetic and sqrtf round randomly; a test may round either
+ * to nearest. */
+export interface Rounding { arithmetic: "random" | "nearest"; sqrt: "random" | "nearest" }
+
 /** Builds (once, cached) and starts the step lane for an official Box3D SHA with one scene. The
- * round-to-nearest step runs here; the randomly rounded runs run Verificarlo's build in Docker, under
- * `backend` (MCA_BACKEND unless a test names another). */
-export async function openStepOracle(sha: string, scene: StepScene, backend = MCA_BACKEND): Promise<StepOracle> {
+ * round-to-nearest step runs here; the randomly rounded runs run Verificarlo's build in Docker. */
+export async function openStepOracle(sha: string, scene: StepScene, rounding: Rounding = { arithmetic: "random", sqrt: "random" }): Promise<StepOracle> {
   const executable = buildStepOracle(sha);
   const start = async (argv: string[]) => {
     const child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
@@ -552,7 +606,8 @@ export async function openStepOracle(sha: string, scene: StepScene, backend = MC
   const lanes = async () => {
     if (stochastic) return stochastic;
     const tag = buildStepOracleMca(sha);
-    const env = (seed: number) => ["-e", `VFC_BACKENDS=${backend} --seed=${seed}`, "-e", "VFC_BACKENDS_SILENT_LOAD=True", "-e", "VFC_BACKENDS_LOGGER=False"];
+    const backend = rounding.arithmetic === "random" ? MCA_BACKEND : "libinterflop_mca.so --mode=ieee";
+    const env = (seed: number) => ["-e", `VFC_BACKENDS=${backend} --seed=${seed}`, "-e", `B3_ORACLE_SQRT=${rounding.sqrt === "random" ? `random:${seed}` : "nearest"}`, "-e", "VFC_BACKENDS_SILENT_LOAD=True", "-e", "VFC_BACKENDS_LOGGER=False"];
     return (stochastic = await Promise.all(Array.from({ length: MCA_LANES }, (_, k) => start(["docker", "run", "--rm", "-i", "--network=none", ...env(k + 1), tag, "box3d-step-oracle"]))));
   };
   const run = (s: StepState, lane = main) => lane.exchange(encodeState(scene, s), async () => decodeResult(await lane.until("end")));
@@ -565,39 +620,36 @@ export async function openStepOracle(sha: string, scene: StepScene, backend = MC
     initial,
     step: (state) => run(state),
     randomlyRounded,
-    async stepWithSpread(state) {
+    async sqrtf(x) {
+      const ask = (lane: typeof main) => lane.exchange(`sqrtf ${f(x)}\n`, async () => unf((await lane.until("end"))[0].split(" ")[1]));
+      const all = await lanes();
+      const [nearest, ...runs] = await Promise.all([ask(main), ...Array.from({ length: MCA_RUNS }, (_, r) => ask(all[r % MCA_LANES]))]);
+      return { nearest, runs };
+    },
+    async stepWithSpread(state, k) {
       const [result, others] = await Promise.all([run(state), randomlyRounded(state)]);
       const base = continuousValues(result);
-      const spread = new Map<string, number>();
-      const spreadAll = new Map<string, number>();
-      const runs: Decision[][] = [];
-      let discreteChanges = 0;
       const groups = quantities(scene, result);
-      const vectors = new Map<string, number>();
-      const vectorsAll = new Map<string, number>();
-      for (const other of others) {
-        runs.push(other.decisions);
-        const values = continuousValues(other);
-        const same = discrete(other) === discrete(result);
-        for (const [key, x] of values) {
-          const b = base.get(key);
-          if (b === undefined) continue;
-          spreadAll.set(key, Math.max(spreadAll.get(key) ?? 0, Math.abs(x - b)));
-          if (same) spread.set(key, Math.max(spread.get(key) ?? 0, Math.abs(x - b)));
+      const kept = others.filter((other) => discrete(other) === discrete(result));
+      const bounds = (set: StepResult[]): Bounds => {
+        const values = new Map<string, Bound>();
+        const vectors = new Map<string, Bound>();
+        const runs = set.map(continuousValues);
+        for (const [key, b] of base) {
+          const z = runs.map((v) => v.get(key)).filter((x) => x !== undefined).map((x) => [x! - b]);
+          values.set(key, bound(z.length === set.length ? z : [], z.map((x) => Math.abs(x[0]))));
         }
         for (const g of groups) {
-          const b = g.members.map((k) => base.get(k));
-          const x = g.members.map((k) => values.get(k));
-          if (b.some((v) => v === undefined) || x.some((v) => v === undefined)) continue;
-          const change = g.rotation ? rotationAngle(x as number[], b as number[]) : Math.hypot(...x.map((v, k) => v! - b[k]!));
-          vectorsAll.set(g.key, Math.max(vectorsAll.get(g.key) ?? 0, change));
-          if (same) vectors.set(g.key, Math.max(vectors.get(g.key) ?? 0, change));
+          const b = g.members.map((m) => base.get(m)!);
+          const xs = runs.map((v) => g.members.map((m) => v.get(m))).filter((x) => x.every((y) => y !== undefined)) as number[][];
+          const changes = xs.map((x) => (g.rotation ? rotationVector(x, b) : x.map((y, c) => y - b[c])));
+          const largest = xs.map((x, i) => (g.rotation ? rotationAngle(x, b) : Math.hypot(...changes[i])));
+          vectors.set(g.key, bound(xs.length === set.length ? changes : [], largest));
         }
-        if (!same) discreteChanges++;
-      }
-      for (const map of [spread, spreadAll, vectors, vectorsAll]) for (const [key, largest] of map) map.set(key, sohierBound(largest));
-      const { unstable, unmatched } = unstableDecisions(result.decisions, runs);
-      return { result, spread, spreadAll, vectors, vectorsAll, discreteChanges, unstable, unmatched };
+        return { values, vectors };
+      };
+      const { unstable, unmatched } = unstableDecisions(result.decisions, others.map((o) => o.decisions), k);
+      return { result, kept: bounds(kept), all: bounds(others), runsKept: kept.length, discreteChanges: others.length - kept.length, unstable, unmatched };
     },
     decide: (kind, operands, flip = false) =>
       exchange(`decide ${kind} ${kind === "separation" || kind === "rolling" ? vec(operands) : `${operands[0]} ${vec(operands.slice(1))}`} ${flip ? 1 : 0}\n`, async () => {

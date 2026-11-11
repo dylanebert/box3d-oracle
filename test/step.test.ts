@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { CONTACT_LANES, continuousValues, entityOf, MCA_RUNS, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, quantities, rotationAngle, sohierBound, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
+import { andersonDarling, ANDERSON_DARLING_05, chiSquareQuantile, normalQuantile } from "../bin/stats";
+import { CONTACT_LANES, continuousValues, deviationInflation, entityOf, familyQuantile, MCA_RUNS, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, quantities, rotationAngle, sohierBound, tolerance, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
 
 // The pinned official Box3D the step lane is held at; building it fetches official main once into the cache.
 const SHA = "336263320469e5e9febfe18697ab562488f7e97a";
@@ -265,79 +266,114 @@ test("an injection before a relax loads bodies and contact lanes; its own state 
   expect(pushed.contacts[contact.id]).not.toEqual(after.contacts[contact.id]);
 }, 60_000);
 
-test("the run count and bound are the paper's Bernoulli case at the fixed probability and confidence", () => {
-  // Sohier et al., Table 3: probability 0.95 at confidence 0.95 needs 59 runs.
-  expect(MCA_RUNS).toBe(59);
+test("the run count, inflation and quantiles are the paper's at the fixed constants", () => {
+  // Sohier et al., Table 3: probability 0.99 at confidence 0.95 needs 299 runs, the fallback's count.
+  expect(MCA_RUNS).toBe(299);
+  expect(chiSquareQuantile(0.05, 9)).toBeCloseTo(3.3251, 3);
+  expect(chiSquareQuantile(0.05, 298)).toBeCloseTo(259.01, 1);
+  expect(deviationInflation(MCA_RUNS)).toBeCloseTo(1.0726, 3);
+  expect(familyQuantile(1)).toBeCloseTo(1.95996, 4);
+  expect(normalQuantile(1 - 0.05 / 2e6)).toBeCloseTo(5.4513, 3);
   expect(sohierBound(0)).toBe(0);
   expect(sohierBound(0.75)).toBe(1);
   expect(sohierBound(1)).toBe(2);
   expect(sohierBound(3e-8)).toBe(2 ** -24);
 });
 
-test("Verificarlo's build of upstream under its IEEE mode is the round-to-nearest lane bit for bit", async () => {
-  const ieee = await openStepOracle(SHA, scene, "libinterflop_mca.so --mode=ieee");
+test("Anderson-Darling accepts normal samples at about its level and rejects uniform ones", () => {
+  let seed = 7;
+  const uniform = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const normal = () => Math.sqrt(-2 * Math.log(uniform())) * Math.cos(2 * Math.PI * uniform());
+  let rejected = 0;
+  for (let t = 0; t < 1000; t++) if (andersonDarling(Array.from({ length: MCA_RUNS }, normal))! > ANDERSON_DARLING_05) rejected++;
+  expect(rejected / 1000).toBeGreaterThan(0.02);
+  expect(rejected / 1000).toBeLessThan(0.08);
+  for (let t = 0; t < 20; t++) expect(andersonDarling(Array.from({ length: MCA_RUNS }, uniform))!).toBeGreaterThan(ANDERSON_DARLING_05);
+  expect(andersonDarling([1, 1, 1, 1, 1, 1, 1, 1])).toBeUndefined();
+});
+
+test("Verificarlo's build of upstream rounding to nearest is the native lane bit for bit", async () => {
+  const nearest = await openStepOracle(SHA, scene, { arithmetic: "nearest", sqrt: "nearest" });
   try {
     for (const k of [20, 120, 200]) {
       const state = nextState(native[k]);
-      for (const run of await ieee.randomlyRounded(state)) expect(run).toEqual(native[k + 1]);
+      for (const run of await nearest.randomlyRounded(state)) expect(run).toEqual(native[k + 1]);
     }
+    const { nearest: here, runs } = await nearest.sqrtf(2);
+    expect(runs.every((x) => x === here)).toBe(true);
   } finally {
-    ieee.close();
+    nearest.close();
   }
 }, 120_000);
 
-test("randomly rounded runs differ from each other, and an independent set's mean lies within the bound of the round-to-nearest step", async () => {
-  const state = nextState(native[120]);
-  const { result, spread, spreadAll, discreteChanges } = await oracle.stepWithSpread(state);
-  expect(result).toEqual(native[121]);
-  for (const [key, value] of spread) expect(spreadAll.get(key)!).toBeGreaterThanOrEqual(value);
-  // A static body's state is not computed, so no run changes it.
-  expect(spread.get("bodies.0.center.1")).toBe(0);
-  const runs = await oracle.randomlyRounded(state);
-  const values = runs.map(continuousValues);
-  expect(new Set(values.map((v) => JSON.stringify([...v.values()]))).size).toBe(MCA_RUNS);
-  const base = continuousValues(result);
-  let compared = 0;
-  for (const [key, bound] of discreteChanges === 0 ? spread : spreadAll) {
-    const xs = values.map((v) => v.get(key)).filter((x) => x !== undefined) as number[];
-    if (xs.length !== MCA_RUNS) continue;
-    const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
-    expect(Math.abs(mean - base.get(key)!)).toBeLessThanOrEqual(bound);
-    if (bound > 0) compared++;
+test("sqrtf rounds randomly by distance, and upstream's own calls go through it", async () => {
+  // sqrt(2) lies 0.38 of the way from its float below to its float above.
+  const { nearest, runs } = await oracle.sqrtf(2);
+  expect(nearest).toBe(Math.fround(Math.SQRT2));
+  const below = nearest < Math.SQRT2 ? nearest : runs.find((x) => x < nearest)!;
+  const above = runs.find((x) => x > below)!;
+  expect(new Set(runs)).toEqual(new Set([below, above]));
+  const up = (Math.SQRT2 - below) / (above - below);
+  const observed = runs.filter((x) => x === above).length / runs.length;
+  expect(Math.abs(observed - up)).toBeLessThan(4 * Math.sqrt((up * (1 - up)) / runs.length));
+  expect((await oracle.sqrtf(4)).runs.every((x) => x === 2)).toBe(true);
+  // With arithmetic rounding to nearest, only sqrtf varies a step.
+  const sqrtOnly = await openStepOracle(SHA, scene, { arithmetic: "nearest", sqrt: "random" });
+  try {
+    const runsOf = await sqrtOnly.randomlyRounded(nextState(native[120]));
+    expect(runsOf.some((run) => JSON.stringify(run.bodies) !== JSON.stringify(native[121].bodies))).toBe(true);
+  } finally {
+    sqrtOnly.close();
   }
-  expect(compared).toBeGreaterThan(100);
+}, 120_000);
+
+test("the CNH tolerance holds a fresh independent set of runs at its stated rate", async () => {
+  const state = nextState(native[120]);
+  const { result, kept, runsKept } = await oracle.stepWithSpread(state, familyQuantile(1));
+  expect(result).toEqual(native[121]);
+  expect(runsKept).toBe(MCA_RUNS);
+  // A static body's state is not computed, so no run changes it.
+  expect(kept.values.get("bodies.0.center.1")!.range).toBe(0);
+  const base = continuousValues(result);
+  const fresh = (await oracle.randomlyRounded(state)).map(continuousValues);
+  expect(new Set(fresh.map((v) => JSON.stringify([...v.values()]))).size).toBe(MCA_RUNS);
+  const normal = [...kept.values].filter(([, b]) => b.normal && b.tested);
+  const rejected = [...kept.values].filter(([, b]) => b.tested && !b.normal).length;
+  expect(normal.length).toBeGreaterThan(50);
+  const exceed = (k: number) => normal.reduce((count, [key, b]) => count + fresh.filter((v) => Math.abs(v.get(key)! - base.get(key)!) > tolerance(b, k)).length, 0);
+  const pairs = normal.length * fresh.length;
+  // Each quantity alone at 0.05, and the whole family of quantity-run pairs at 0.05 by Bonferroni.
+  expect(exceed(familyQuantile(1)) / pairs).toBeLessThanOrEqual(0.05);
+  expect(exceed(familyQuantile(pairs))).toBe(0);
+  console.log(JSON.stringify({ tested: normal.length + rejected, rejected, individual: exceed(familyQuantile(1)) / pairs }));
 }, 60_000);
 
-test("a vector's spread is bounded by its components' and a rotation's is an angle", async () => {
+test("a vector's bound is its components' and a rotation's is an angle", async () => {
   const state = nextState(native[120]);
-  const { result, spread, vectors, vectorsAll } = await oracle.stepWithSpread(state);
+  const { result, kept } = await oracle.stepWithSpread(state, familyQuantile(1));
   const groups = quantities(scene, result);
   expect(groups.some((g) => g.key.startsWith("joints.") && g.members.length === 3)).toBe(true);
   expect(groups.some((g) => g.key.endsWith(".frictionImpulse"))).toBe(true);
-  // A run's change norm lies between its largest component change and the norm of its components'
-  // largest changes; each is then rounded up to a power of two, at most doubling it.
   for (const g of groups) {
-    const v = vectors.get(g.key) ?? 0;
-    expect(vectorsAll.get(g.key) ?? 0).toBeGreaterThanOrEqual(v);
+    const v = kept.vectors.get(g.key)!;
     if (g.rotation) continue;
-    const parts = g.members.map((k) => spread.get(k) ?? 0);
-    expect(v).toBeGreaterThanOrEqual(Math.max(...parts));
-    expect(v).toBeLessThanOrEqual(2 * Math.hypot(...parts));
+    const parts = g.members.map((k) => kept.values.get(k)!);
+    expect(v.range).toBeGreaterThanOrEqual(Math.max(...parts.map((p) => p.range)));
+    expect(v.sigma).toBeCloseTo(Math.hypot(...parts.map((p) => p.sigma)), 12);
   }
-  expect(vectors.get("bodies.0.center")).toBe(0);
-  expect(vectors.get("bodies.3.rotation")!).toBeGreaterThan(0);
+  expect(kept.vectors.get("bodies.0.center")!.range).toBe(0);
+  expect(kept.vectors.get("bodies.3.rotation")!.sigma).toBeGreaterThan(0);
   expect(rotationAngle([0, 0, Math.sin(0.05), Math.cos(0.05)], [0, 0, 0, -1])).toBeCloseTo(0.1, 12);
-  expect(Math.max(...[0, 1, 2].map((k) => spread.get(`bodies.3.linearVelocity.${k}`)!))).toBeGreaterThan(0);
 }, 60_000);
 
-// Sentinel: every hooked decision reports its closest approach, a decision is unstable when ten times
-// its margin's spread over the randomly rounded runs (or its local bound) reaches its threshold, and a flip
-// with that window changes upstream's step.
+// Sentinel: every hooked decision reports its closest approach, a decision is unstable when its
+// margin's tolerance over the randomly rounded runs (or its local bound) reaches its threshold, and a
+// flip with that window changes upstream's step.
 test("decisions unstable by their spread are reported and flip within their window", async () => {
   let checked = 0;
   for (let k = 1; k < STEPS && checked < 3; k++) {
     const state = nextState(native[k - 1]);
-    const { result, unstable } = await oracle.stepWithSpread(state);
+    const { result, unstable } = await oracle.stepWithSpread(state, familyQuantile(1));
     expect(result.decisions.length).toBeGreaterThan(0);
     for (const ill of result.illConditioned) expect(unstable.some((u) => u.kind === ill.kind && u.id === ill.id)).toBe(true);
     for (const u of unstable) expect(u.otherSideRuns).toBeLessThanOrEqual(MCA_RUNS);
@@ -356,18 +392,18 @@ test("decisions unstable by their spread are reported and flip within their wind
 test("a run takes a decision's other side only when a matched occurrence crosses", () => {
   const d = (substep: number, point: number, quantity: number, bound = 2e-8) => ({ kind: "separation" as const, id: 7, substep, stage: 1, point, quantity, threshold: 0, bound });
   const baseline = [d(1, 0, -1e-8), d(1, 65537, 1.01e-8)];
-  expect(unstableDecisions(baseline, [[d(1, 0, -1.02e-8), d(1, 65537, 1.01e-8)]]).unstable.map((u) => u.otherSideRuns)).toEqual([0]);
-  const crossed = unstableDecisions(baseline, [[d(1, 0, 1e-9), d(1, 65537, 1.01e-8)]]);
+  expect(unstableDecisions(baseline, [[d(1, 0, -1.02e-8), d(1, 65537, 1.01e-8)]], 5).unstable.map((u) => u.otherSideRuns)).toEqual([0]);
+  const crossed = unstableDecisions(baseline, [[d(1, 0, 1e-9), d(1, 65537, 1.01e-8)]], 5);
   expect(crossed.unstable.map((u) => [u.otherSideRuns, u.margin])).toEqual([[1, -1e-8]]);
   // The reviewer's probe: two points over four substeps, the run keeping only the first.
   const two = [1, 2, 3, 4].flatMap((s) => [d(s, 0, -1e-8, 1e-12), d(s, 65537, 1e-8, 1e-12)]);
   const one = [1, 2, 3, 4].map((s) => d(s, 0, -1e-8, 1e-12));
-  const lost = unstableDecisions(two, [one]);
+  const lost = unstableDecisions(two, [one], 5);
   expect(lost.unstable).toEqual([]);
   expect(lost.unmatched).toBe(4);
   // An occurrence is not made unstable by another's larger spread.
   const tight = [d(1, 0, -1e-8, 1e-12), d(1, 65537, 1e-3, 1e-12)];
-  expect(unstableDecisions(tight, [[d(1, 0, -1.0002e-8, 1e-12), d(1, 65537, 1.001e-3, 1e-12)]]).unstable).toEqual([]);
+  expect(unstableDecisions(tight, [[d(1, 0, -1.0002e-8, 1e-12), d(1, 65537, 1.001e-3, 1e-12)]], 5).unstable).toEqual([]);
 });
 
 test("occurrence keys are structural: unique in a step, and equal between a step and its rerun", async () => {
