@@ -296,10 +296,10 @@ static b3BodyId bodyIds[MAX_ITEMS];
 // decision within ten bounds but outside one is reported as near, for tests of the bound.
 enum { KIND_SEGMENT, KIND_SEPARATION, KIND_REVOLUTE_LOWER, KIND_REVOLUTE_UPPER, KIND_TWIST_LOWER, KIND_TWIST_UPPER,
 	   KIND_CONE, KIND_PRISMATIC_LOWER, KIND_PRISMATIC_UPPER, KIND_PRISMATIC_LOWER_SPECULATIVE,
-	   KIND_PRISMATIC_UPPER_SPECULATIVE, KIND_COUNT };
+	   KIND_PRISMATIC_UPPER_SPECULATIVE, KIND_ROLLING, KIND_COUNT };
 static const char* kindNames[KIND_COUNT] = { "segment", "separation", "revolute-lower", "revolute-upper", "twist-lower",
 											 "twist-upper", "cone", "prismatic-lower", "prismatic-upper",
-											 "prismatic-lower-speculative", "prismatic-upper-speculative" };
+											 "prismatic-lower-speculative", "prismatic-upper-speculative", "rolling" };
 typedef struct Decision
 {
 	int kind, id;
@@ -386,6 +386,43 @@ static void separationDecision(b3Contact* const* contacts, int width, const void
 		int id = contacts[lane]->contactId;
 		if (decide(KIND_SEPARATION, id, S[lane], 0.0, bound, listed(flipContacts, flipContactCount, id)))
 			mask[lane] = mask[lane] != 0.0f ? 0.0f : 1.0f;
+	}
+}
+
+// Contact relax's rolling clamp: lengthSquared = |old + M (wA - wB)|^2 against FLT_EPSILON + max^2. With a
+// zero cap the two sides differ by the whole impulse, about sqrt(FLT_EPSILON).
+static void rollingDecision(b3Contact* const* contacts, int width, const void* lengthSquared, void* mask, const void* maxImpulse,
+							const void* oldImpulse, const void* impulse, const void* rollingMass, const void* wA, const void* wB,
+							const void* rollingMask)
+{
+	const float *L = lengthSquared, *X = maxImpulse, *O = oldImpulse, *I = impulse, *M = rollingMass, *A = wA, *B = wB, *R = rollingMask;
+	float* K = mask;
+	for (int lane = 0; lane < width; ++lane)
+	{
+		if (contacts[lane] == NULL || R[lane] == 0.0f) continue;
+		double m[6], dw[3], old[3], imp[3];
+		for (int k = 0; k < 6; ++k) m[k] = fabs(M[k * width + lane]);
+		for (int k = 0; k < 3; ++k)
+		{
+			dw[k] = fabs(A[k * width + lane]) + fabs(B[k * width + lane]);
+			old[k] = fabs(O[k * width + lane]);
+			imp[k] = fabs(I[k * width + lane]);
+		}
+		// cxx cxy cxz cyy cyz czz: row k of the symmetric matrix.
+		double rows[3][3] = { { m[0], m[1], m[2] }, { m[1], m[3], m[4] }, { m[2], m[4], m[5] } };
+		double lengthError = gam(3) * (imp[0] * imp[0] + imp[1] * imp[1] + imp[2] * imp[2]);
+		for (int k = 0; k < 3; ++k)
+		{
+			double delta = rows[k][0] * dw[0] + rows[k][1] * dw[1] + rows[k][2] * dw[2];
+			double error = gam(5) * delta + gam(1) * (old[k] + delta);
+			lengthError += 2.0 * imp[k] * error + error * error;
+		}
+		double cap = X[lane];
+		double threshold = FLT_EPSILON + cap * cap;
+		double bound = lengthError + gam(3) * threshold;
+		int id = contacts[lane]->contactId;
+		if (decide(KIND_ROLLING, id, L[lane], threshold, bound, listed(flipContacts, flipContactCount, id)))
+			K[lane] = K[lane] != 0.0f ? 0.0f : 1.0f;
 	}
 }
 
@@ -925,6 +962,7 @@ static void segment(void)
 // decide kind operands... flip: one decision hook on supplied operands, for tests of its bound.
 //   separation s n dpA dpB dqA dqB rA rB nA nB normalSeparation baseSeparation
 //   limit index(0-4) c limitValue dqA dqB frameA frameB relQ
+//   rolling lengthSquared max old(3) impulse(3) rollingMass(6) wA wB
 //   translation index(5-6) C limitValue speculativeDistance dcA dcB deltaCenter rA rB frameA frameB dqA dqB localAxis axis d
 static void decideCommand(void)
 {
@@ -946,6 +984,19 @@ static void decideCommand(void)
 		b3Contact* lanes[1] = { &probe };
 		float mask = sv > 0.0f ? 1.0f : 0.0f;
 		separationDecision(lanes, 1, &sv, &mask, &n, &pa, &pb, &qa, &qb, &ra, &rb, &na, &nb, &ns, &base, &mass);
+		result = mask;
+	}
+	else if (strcmp(kind, "rolling") == 0)
+	{
+		float values[20];
+		for (int k = 0; k < 20; ++k) values[k] = readFloat();
+		flipContactCount = readInt() != 0 ? 1 : 0;
+		flipContacts[0] = -1;
+		static b3Contact probe;
+		probe.contactId = -1;
+		b3Contact* lanes[1] = { &probe };
+		float mask = values[0] > FLT_EPSILON + values[1] * values[1] ? 1.0f : 0.0f, on = 1.0f;
+		rollingDecision(lanes, 1, values, &mask, values + 1, values + 2, values + 5, values + 8, values + 14, values + 17, &on);
 		result = mask;
 	}
 	else if (strcmp(kind, "limit") == 0)
@@ -985,6 +1036,7 @@ int main(void)
 	b3OracleLimitDecision = limitDecision;
 	b3OracleTranslationDecision = translationDecision;
 	b3OracleStageHook = stageHook;
+	b3OracleRollingDecision = rollingDecision;
 	readScene();
 	writeMass();
 	fprintf(out, "ready\n");

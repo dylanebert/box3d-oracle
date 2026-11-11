@@ -42,6 +42,12 @@ typedef float b3OracleTranslationHook( int jointId, int limit, bool useBias, flo
 									   b3Vec3 deltaCenter, b3Vec3 rA, b3Vec3 rB, b3Vec3 frameA, b3Vec3 frameB, b3Quat dqA,
 									   b3Quat dqB, b3Vec3 localAxis, b3Vec3 axis, b3Vec3 d );
 extern b3OracleTranslationHook* b3OracleTranslationDecision;
+// Contact relax's rolling resistance clamp per lane, lengthSquared > FLT_EPSILON + maxImpulse^2, where
+// the impulse is oldImpulse + rollingMass (wA - wB); the hook may rewrite `mask`'s lanes.
+typedef void b3OracleRollingHook( b3Contact* const* contacts, int width, const void* lengthSquared, void* mask, const void* maxImpulse,
+								  const void* oldImpulse, const void* impulse, const void* rollingMass, const void* wA, const void* wB,
+								  const void* rollingMask );
+extern b3OracleRollingHook* b3OracleRollingDecision;
 // After each solver stage the main thread executes, with its b3SolverStageType and graph color.
 typedef struct b3StepContext b3StepContext;
 typedef void b3OracleStage( int type, int color, b3StepContext* context );

@@ -182,11 +182,16 @@ const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 const absDot = (a: number[], b: number[]) => sum(a.map((x, i) => Math.abs(x * b[i])));
 // Leading-order estimates of each bound: unit roundoff times the magnitudes the quantity sums.
 const estimates: Record<string, (o: number[]) => number> = {
+  rolling: (o) => { const imp = o.slice(5, 8).map(Math.abs); const dw = [0, 1, 2].map((k) => Math.abs(o[14 + k]) + Math.abs(o[17 + k])); const m = o.slice(8, 14).map(Math.abs); const rows = [[m[0], m[1], m[2]], [m[1], m[3], m[4]], [m[2], m[4], m[5]]]; return U * (sum(imp.map((x) => x * x)) + sum(imp.map((x, k) => 2 * x * (absDot(rows[k], dw) + Math.abs(o[2 + k])))) + EPS); },
   separation: (o) => U * (absDot(o.slice(1, 4), o.slice(4, 7).map((x, i) => Math.abs(x) + Math.abs(o[7 + i]))) + absDot(o.slice(24, 27), o.slice(18, 21)) + absDot(o.slice(27, 30), o.slice(21, 24)) + Math.abs(o[30]) + Math.abs(o[31]) + sum(o.slice(18, 24).map(Math.abs))),
   limit: (o) => { const [x, y, z, w] = o.slice(19, 23); const twist = o[0] !== 4; const r = twist ? Math.hypot(z, w) : 1; return U * ((twist ? 2 * (Math.abs(z) + Math.abs(w)) / (r * r) : 4) + Math.abs(o[2])); },
   translation: (o) => 0.4 * U * (absDot(o.slice(37, 40), o.slice(34, 37)) + sum(o.slice(4, 25).map(Math.abs)) + Math.abs(o[2])),
 };
-const hooks: [string, "separation" | "limit" | "translation", (q: number) => number[], (q: number, value: number) => boolean][] = [
+const EPS = 2 ** -23;
+// A rolling impulse of length near sqrt(FLT_EPSILON) against a zero cap, as a contact that stops pressing.
+const rollingOperands = (q: number) => [Math.fround(EPS + q), 0, 2e-4, 1e-4, -1e-4, 1e-4, 7e-5, -3.2e-4, 0.01, 0.001, -0.002, 0.02, 0.003, 0.015, 0.5, -0.2, 0.1, -0.3, 0.4, 0.05];
+const hooks: [string, "separation" | "rolling" | "limit" | "translation", (q: number) => number[], (q: number, value: number) => boolean][] = [
+  ["rolling", "rolling", rollingOperands, (q, mask) => (mask === 1) === Math.fround(EPS + q) > EPS],
   ["separation", "separation", (q) => [q, 0, 1, 0, 0, 0, 0, 1e-3, -2e-3, 5e-4, 0, 0, 0, 1, ...unitQuat(0.01, 0.002, 0), 0.1, -0.05, 0.02, -0.03, 0.12, 0.01, 0, 1, 0, 0.0199, 0.9998, 0.002, 2e-3, -0.01], (q, mask) => (mask === 1) === q > 0],
   ...([[0, "revolute-lower"], [2, "twist-lower"], [4, "cone"]] as const).map(([index, name]) => [name, "limit", (q: number) => [index, q, -0.5, ...unitQuat(0.003, -0.001, 0.002), ...unitQuat(-0.002, 0.001, 0.004), ...unitQuat(0.1, 0.2, 0.05), ...unitQuat(-0.3, 0.1, 0.2), ...unitQuat(0.05, 0.3, -0.24)], (q: number, c: number) => (c > 0) === q > 0] as [string, "limit", (q: number) => number[], (q: number, value: number) => boolean]),
   ["prismatic-lower", "translation", (q) => [5, q, -1.8, 0.9, 1e-3, 2e-3, 0, -3e-4, 1e-3, 0, 0.2, 1, 0, 0, 0.5, 0, -0.1, -0.4, 0.05, 0, 1, 0, 0, -0.5, 0, ...unitQuat(0.001, 0, 0.002), ...unitQuat(0, 0.003, 0), 1, 0, 0, 1, 0.002, -0.001, 0.3, 1.6, 0.02], (q, c) => (c > 0) === q > 0],

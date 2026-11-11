@@ -105,13 +105,13 @@ export interface StageBody { linearVelocity: Vec3; angularVelocity: Vec3; deltaP
 export interface Entity { entity: "contact" | "joint"; id: number }
 /** The discrete tests the step lane bounds: b3SegmentDistance's parallel test, contact push's
  * speculative switch on separation, joint limits' speculative switch, and a prismatic limit's
- * speculative distance, beyond which it is not solved. */
-export type DecisionKind = "segment" | "separation" | "revolute-lower" | "revolute-upper" | "twist-lower" | "twist-upper" | "cone" | "prismatic-lower" | "prismatic-upper" | "prismatic-lower-speculative" | "prismatic-upper-speculative";
+ * speculative distance, beyond which it is not solved, and contact relax's rolling resistance clamp. */
+export type DecisionKind = "segment" | "separation" | "revolute-lower" | "revolute-upper" | "twist-lower" | "twist-upper" | "cone" | "prismatic-lower" | "prismatic-upper" | "prismatic-lower-speculative" | "prismatic-upper-speculative" | "rolling";
 /** A decision whose deciding quantity upstream computed within `bound` (its forward error bound from
  * the site's operands) of the threshold, where a port's legal rounding may land on either side.
  * `id` is a contact's for segment and separation, else a joint's; `side` is upstream's. */
 export interface IllConditioned { kind: DecisionKind; id: number; quantity: number; bound: number; side: boolean }
-export const entityOf = (d: IllConditioned): Entity => ({ entity: d.kind === "segment" || d.kind === "separation" ? "contact" : "joint", id: d.id });
+export const entityOf = (d: IllConditioned): Entity => ({ entity: d.kind === "segment" || d.kind === "separation" || d.kind === "rolling" ? "contact" : "joint", id: d.id });
 
 export interface StepManifoldPoint { featureId: number; anchorA: Vec3; anchorB: Vec3; separation: number; normalImpulse: number; totalNormalImpulse: number }
 export interface StepResultContact {
@@ -346,7 +346,7 @@ export interface StepOracle {
   rollout(steps: number): Promise<StepResult[]>;
   /** One decision hook on supplied operands, as `decide <kind> ...` reads them (adapter/step.c): the
    * value the test then sees (a mask lane for separation, c for limits) and its report. */
-  decide(kind: "separation" | "limit" | "translation", operands: number[], flip?: boolean): Promise<{ value: number; illConditioned: IllConditioned[]; near: IllConditioned[] }>;
+  decide(kind: "separation" | "rolling" | "limit" | "translation", operands: number[], flip?: boolean): Promise<{ value: number; illConditioned: IllConditioned[]; near: IllConditioned[] }>;
   /** One upstream b3SegmentDistance, optionally taking the other side of an ill-conditioned decision. */
   segment(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3, flip?: boolean): Promise<{ fraction1: number; fraction2: number; illConditioned: IllConditioned[]; near: IllConditioned[] }>;
   close(): void;
@@ -421,7 +421,7 @@ export async function openStepOracle(sha: string, scene: StepScene): Promise<Ste
       return { result, spread, discreteChanges };
     },
     decide: (kind, operands, flip = false) =>
-      exchange(`decide ${kind} ${kind === "separation" ? vec(operands) : `${operands[0]} ${vec(operands.slice(1))}`} ${flip ? 1 : 0}\n`, async () => {
+      exchange(`decide ${kind} ${kind === "separation" || kind === "rolling" ? vec(operands) : `${operands[0]} ${vec(operands.slice(1))}`} ${flip ? 1 : 0}\n`, async () => {
         const lines = await until("end");
         const decisions = decodeResult(lines.slice(0, -1));
         return { value: unf(lines.at(-1)!.split(" ")[1]), illConditioned: decisions.illConditioned, near: decisions.near };

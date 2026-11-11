@@ -113,7 +113,7 @@ export const PATCHES: OraclePatch[] = [
     file: "src/math_functions.c",
     marker: "math.segment-distance.hooks",
     anchor: '#include "math_internal.h"\n',
-    addition: '#include "math_internal.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\nb3OracleSegmentHook* b3OracleSegmentDecision = NULL;\nb3OracleSeparationHook* b3OracleSeparationDecision = NULL;\nb3OracleLimitHook* b3OracleLimitDecision = NULL;\nb3OracleTranslationHook* b3OracleTranslationDecision = NULL;\nb3OracleStage* b3OracleStageHook = NULL;\n#endif\n',
+    addition: '#include "math_internal.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\nb3OracleSegmentHook* b3OracleSegmentDecision = NULL;\nb3OracleSeparationHook* b3OracleSeparationDecision = NULL;\nb3OracleLimitHook* b3OracleLimitDecision = NULL;\nb3OracleTranslationHook* b3OracleTranslationDecision = NULL;\nb3OracleStage* b3OracleStageHook = NULL;\nb3OracleRollingHook* b3OracleRollingDecision = NULL;\n#endif\n',
   },
   {
     file: "src/math_functions.c",
@@ -134,6 +134,13 @@ export const PATCHES: OraclePatch[] = [
     optional: true,
     anchor: "\t\t\t\tb3FloatW separated = b3GreaterThanW( s, zeroW );\n",
     addition: `\t\t\t\tb3FloatW separated = b3GreaterThanW( s, zeroW );\n${STEP}\t\t\t\tif ( b3OracleSeparationDecision != NULL )\n\t\t\t\t{\n\t\t\t\t\tb3OracleSeparationDecision( c->contacts, B3_SIMD_WIDTH, &s, &separated, &cm->normal, &bA.dp, &bB.dp, &bA.dq, &bB.dq, &rA, &rB, &normalA, &normalB, &normalSeparation, &cp->baseSeparations, &cp->normalMasses );\n\t\t\t\t}\n#endif\n`,
+  },
+  {
+    file: "src/contact_solver_wide.inl",
+    marker: "step.contact-relax.rolling",
+    optional: true,
+    anchor: "\t\t\t\tb3FloatW mask = b3GreaterThanW( lengthSquared, b3MulAddW( epsilonW, maxImpulse, maxImpulse ) );\n",
+    addition: `\t\t\t\tb3FloatW mask = b3GreaterThanW( lengthSquared, b3MulAddW( epsilonW, maxImpulse, maxImpulse ) );\n${STEP}\t\t\t\tif ( b3OracleRollingDecision != NULL )\n\t\t\t\t{\n\t\t\t\t\tb3OracleRollingDecision( c->contacts, B3_SIMD_WIDTH, &lengthSquared, &mask, &maxImpulse, &oldImpulse, &cm->rollingImpulse, &c->rollingMass, &bA.w, &bB.w, &cm->rollingMask );\n\t\t\t\t}\n#endif\n`,
   },
   ...["revolute_joint.c", "spherical_joint.c", "prismatic_joint.c"].map((file) => ({
     file: `src/${file}`,
