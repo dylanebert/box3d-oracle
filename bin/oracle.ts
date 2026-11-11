@@ -492,23 +492,24 @@ export const VERIFICARLO_IMAGE = "verificarlo/verificarlo@sha256:f024f8e3bba2573
  * vectorization is off, and the build fails if Verificarlo reports a vector width it leaves uninstrumented.
  * The adapter, which only moves bits and evaluates the hooks' bounds, is compiled without it. sqrtf,
  * the one libm call whose result the step rounds, is kept a call (-fno-builtin-sqrtf; the build fails
- * on any inlined square root) and wrapped at link time by adapter/mca_sqrt.c. */
+ * on any inlined square root) and wrapped at link time by adapter/mca_wrap.c, which also freezes clock_gettime so that
+ * profiling arithmetic on wall time does not make seeded runs unrepeatable. */
 export function buildStepOracleMca(sha: string): string {
   requireFullSha(sha);
   const member = join(import.meta.dir, "..");
   const box3d = ["-std=gnu17", "-O3", "-DNDEBUG", "-ffp-contract=off", "-fno-vectorize", "-fno-slp-vectorize", "-fno-builtin-sqrtf", "-fvisibility=hidden", "-DBOX3D_DISABLE_SIMD", "-DBOX3D_VALIDATE", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-I/src/box3d/include", "-I/src/box3d/src"];
   const adapterFlags = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-DNDEBUG", "-I/src/box3d/include", "-I/src/box3d/src"];
   const adapter = join(member, "adapter", "step.c");
-  const sqrt = join(member, "adapter", "mca_sqrt.c");
+  const wrap = join(member, "adapter", "mca_wrap.c");
   const dockerfile = [
     `FROM ${VERIFICARLO_IMAGE}`,
     "COPY box3d /src/box3d",
-    "COPY step.c mca_sqrt.c /src/",
+    "COPY step.c mca_wrap.c /src/",
     "WORKDIR /build",
-    `RUN set -e; for c in /src/box3d/src/*.c; do verificarlo-c ${box3d.join(" ")} -c "$c" -o "$(basename "$c" .c).o" 2>> vfc.log || { cat vfc.log; exit 1; }; done; if grep -i "vector size" vfc.log; then exit 1; fi; if objdump -d *.o | grep -Ew "fsqrt|sqrtss|sqrtsd"; then echo "a square root is inlined past the sqrtf wrapper"; exit 1; fi; clang ${adapterFlags.join(" ")} -c /src/step.c -o step.o; clang -O2 -std=c11 -Wall -Wextra -Werror -c /src/mca_sqrt.c -o mca_sqrt.o; verificarlo-c *.o -lm -Wl,--wrap=sqrtf -o /usr/local/bin/box3d-step-oracle; rm -rf /build`,
+    `RUN set -e; for c in /src/box3d/src/*.c; do verificarlo-c ${box3d.join(" ")} -c "$c" -o "$(basename "$c" .c).o" 2>> vfc.log || { cat vfc.log; exit 1; }; done; if grep -i "vector size" vfc.log; then exit 1; fi; if objdump -d *.o | grep -Ew "fsqrt|sqrtss|sqrtsd"; then echo "a square root is inlined past the sqrtf wrapper"; exit 1; fi; clang ${adapterFlags.join(" ")} -c /src/step.c -o step.o; clang -O2 -std=gnu11 -Wall -Wextra -Werror -c /src/mca_wrap.c -o mca_wrap.o; verificarlo-c *.o -lm -Wl,--wrap=sqrtf,--wrap=clock_gettime -o /usr/local/bin/box3d-step-oracle; rm -rf /build`,
     "",
   ].join("\n");
-  const key = digest([sha, hookDigest(), readFileSync(adapter, "utf8"), readFileSync(sqrt, "utf8"), dockerfile].join("\n")).slice(0, 16);
+  const key = digest([sha, hookDigest(), readFileSync(adapter, "utf8"), readFileSync(wrap, "utf8"), dockerfile].join("\n")).slice(0, 16);
   const tag = `box3d-step-oracle-mca:${sha.slice(0, 12)}-${key}`;
   if (command("docker", ["image", "inspect", tag]).status === 0) return tag;
   const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
@@ -519,7 +520,7 @@ export function buildStepOracleMca(sha: string): string {
   checked("cp", ["-R", patched, join(context, "box3d")]);
   rmSync(join(context, "box3d", ".git"), { recursive: true, force: true });
   checked("cp", [adapter, join(context, "step.c")]);
-  checked("cp", [sqrt, join(context, "mca_sqrt.c")]);
+  checked("cp", [wrap, join(context, "mca_wrap.c")]);
   writeFileSync(join(context, "Dockerfile"), dockerfile);
   checked("docker", ["build", "--network=none", "-t", tag, context]);
   verifyPristine(official, sha);

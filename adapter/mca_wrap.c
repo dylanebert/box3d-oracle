@@ -1,5 +1,12 @@
-// sqrtf randomly rounded for the step lane's Verificarlo build, linked with -Wl,--wrap=sqrtf so that
-// upstream's source is unchanged. Verificarlo instruments + - * / but not libm, and sqrtf is the one libm
+// Link-time wrappers for the step lane's Verificarlo build (-Wl,--wrap=sqrtf,--wrap=clock_gettime), so
+// that upstream's source is unchanged.
+//
+// clock_gettime is frozen at zero. Box3D times its stages into world->profile, float arithmetic on wall
+// time; random rounding leaves an exact result exact without drawing from its stream, so how much of
+// the stream a step consumed depended on the clock, and seeded runs did not repeat. Profiling is all
+// the clock feeds in a step.
+//
+// sqrtf is randomly rounded. Verificarlo instruments + - * / but not libm, and sqrtf is the one libm
 // call whose result Box3D's step rounds. B3_ORACLE_SQRT selects: "nearest" calls the real sqrtf;
 // "random:<seed>" takes the correctly rounded double sqrt and rounds it to one of its two neighbouring
 // floats with probability by distance, from a stream seeded per lane, keeping exact results exact.
@@ -8,9 +15,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 float __real_sqrtf(float x);
 float __wrap_sqrtf(float x);
+int __wrap_clock_gettime(clockid_t clock, struct timespec* time);
+
+int __wrap_clock_gettime(clockid_t clock, struct timespec* time)
+{
+	(void)clock;
+	time->tv_sec = 0;
+	time->tv_nsec = 0;
+	return 0;
+}
 
 static int mode = -1;
 static uint64_t state;

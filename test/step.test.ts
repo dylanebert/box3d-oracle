@@ -306,8 +306,18 @@ test("Verificarlo's build of upstream rounding to nearest is the native lane bit
   }
 }, 120_000);
 
+test("seeded runs repeat: a second oracle given the same requests draws the same runs", async () => {
+  const again = await openStepOracle(SHA, scene);
+  try {
+    const state = nextState(native[120]);
+    expect(await again.randomlyRounded(state)).toEqual(await oracle.randomlyRounded(state));
+  } finally {
+    again.close();
+  }
+}, 120_000);
+
 test("sqrtf rounds randomly by distance, and upstream's own calls go through it", async () => {
-  // sqrt(2) lies 0.38 of the way from its float below to its float above.
+  // sqrt(2) lies 0.20 of the way from its float below to its float above.
   const { nearest, runs } = await oracle.sqrtf(2);
   expect(nearest).toBe(Math.fround(Math.SQRT2));
   const below = nearest < Math.SQRT2 ? nearest : runs.find((x) => x < nearest)!;

@@ -307,7 +307,7 @@ export function nextState(result: StepResult, applied: { force?: Vec3; torque?: 
  * rounding mode at binary32's own 24-bit virtual precision, which rounds each inexact result to one of
  * its two neighbouring floats with probability by distance and leaves exact results exact. sqrtf, the
  * one libm call whose result Box3D's step rounds (remainderf and nextafterf are exact), is randomly
- * rounded the same way by a link-time wrapper (adapter/mca_sqrt.c).
+ * rounded the same way by a link-time wrapper (adapter/mca_wrap.c).
  *
  * Bounds follow Sohier et al., "Confidence Intervals for Stochastic Arithmetic" (arXiv 1807.09655),
  * with the round-to-nearest step as reference, Z = run - step. Under the Centered Normality Hypothesis
