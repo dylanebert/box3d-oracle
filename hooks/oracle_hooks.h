@@ -52,6 +52,13 @@ extern b3OracleRollingHook* b3OracleRollingDecision;
 typedef struct b3StepContext b3StepContext;
 typedef void b3OracleStage( int type, int color, b3StepContext* context );
 extern b3OracleStage* b3OracleStageHook;
+// Before each solver stage the main thread executes, as b3OracleStageHook after it.
+extern b3OracleStage* b3OracleStageBeginHook;
+// One convex contact's lanes among a color's wide constraints: normal impulses (points 0, 1), total
+// normal impulses (0, 1), friction impulse x and y, twist impulse, rolling impulse x, y, z and base
+// separations (points 0, 1), then the prepared constants CONTACT_LANES names (bin/step.ts). Returns
+// how many fields were filled, 0 where the contact is not among them.
+int b3OracleContactLanesW4( void* wideConstraints, int count, int contactId, float** fields );
 extern uint32_t b3OracleRecycleVisits;
 extern uint32_t b3OracleO4ConvexManifoldVisits;
 extern uint32_t b3OracleO4MeshContactVisits;

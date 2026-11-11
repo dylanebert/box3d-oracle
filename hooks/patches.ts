@@ -113,7 +113,7 @@ export const PATCHES: OraclePatch[] = [
     file: "src/math_functions.c",
     marker: "math.segment-distance.hooks",
     anchor: '#include "math_internal.h"\n',
-    addition: '#include "math_internal.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\nb3OracleSegmentHook* b3OracleSegmentDecision = NULL;\nb3OracleSeparationHook* b3OracleSeparationDecision = NULL;\nb3OracleLimitHook* b3OracleLimitDecision = NULL;\nb3OracleTranslationHook* b3OracleTranslationDecision = NULL;\nb3OracleStage* b3OracleStageHook = NULL;\nb3OracleRollingHook* b3OracleRollingDecision = NULL;\n#endif\n',
+    addition: '#include "math_internal.h"\n#ifdef B3_ORACLE_HOOKS\n#include "oracle_hooks.h"\nb3OracleSegmentHook* b3OracleSegmentDecision = NULL;\nb3OracleSeparationHook* b3OracleSeparationDecision = NULL;\nb3OracleLimitHook* b3OracleLimitDecision = NULL;\nb3OracleTranslationHook* b3OracleTranslationDecision = NULL;\nb3OracleStage* b3OracleStageHook = NULL;\nb3OracleStage* b3OracleStageBeginHook = NULL;\nb3OracleRollingHook* b3OracleRollingDecision = NULL;\n#endif\n',
   },
   {
     file: "src/math_functions.c",
@@ -161,6 +161,20 @@ export const PATCHES: OraclePatch[] = [
     anchor: `\t\t\t${line}\n`,
     addition: `\t\t\t${line}\n${STEP}\t\t\tif ( b3OracleTranslationDecision != NULL )\n\t\t\t{\n\t\t\t\tC = b3OracleTranslationDecision( base->jointId, ${code}, useBias, C, ${limit}, speculativeDistance, stateA->deltaPosition, stateB->deltaPosition, joint->deltaCenter, rA, rB, joint->frameA.p, joint->frameB.p, stateA->deltaRotation, stateB->deltaRotation, joint->jointAxis, jointAxis, d );\n\t\t\t}\n#endif\n`,
   })) as OraclePatch[],
+  {
+    file: "src/solver.c",
+    marker: "step.solver.stage-begin",
+    optional: true,
+    anchor: "\tint blockCount = stage->blockCount;\n\tif ( blockCount == 0 )\n\t{\n\t\treturn;\n\t}\n\n\tconst int workerIndex = 0;\n",
+    addition: `\tint blockCount = stage->blockCount;\n\tif ( blockCount == 0 )\n\t{\n\t\treturn;\n\t}\n\n\tconst int workerIndex = 0;\n${STEP}\tif ( b3OracleStageBeginHook != NULL )\n\t{\n\t\tb3OracleStageBeginHook( (int)stage->type, stage->colorIndex, context );\n\t}\n#endif\n`,
+  },
+  {
+    file: "src/contact_solver_wide.inl",
+    marker: "step.contact-lanes",
+    optional: true,
+    anchor: "void B3_WIDE( b3PushContacts_Convex )( b3SolverBlock block, b3StepContext* context )\n{\n",
+    addition: `${STEP}int B3_WIDE( b3OracleContactLanes )( void* wideConstraints, int count, int contactId, float** fields )\n{\n\tb3ConvexConstraintWide* constraints = wideConstraints;\n\tfor ( int i = 0; i < count; ++i )\n\t{\n\t\tb3ConvexConstraintWide* c = constraints + i;\n\t\tfor ( int lane = 0; lane < B3_SIMD_WIDTH; ++lane )\n\t\t{\n\t\t\tif ( c->base.contacts[lane] == NULL || c->base.contacts[lane]->contactId != contactId ) continue;\n\t\t\tb3ContactManifoldWide* m = &c->manifold;\n\t\t\tint n = 0;\n\t\t\tfor ( int k = 0; k < 2; ++k ) fields[n++] = (float*)&m->points[k].normalImpulses + lane;\n\t\t\tfor ( int k = 0; k < 2; ++k ) fields[n++] = (float*)&m->points[k].totalNormalImpulses + lane;\n\t\t\tfields[n++] = (float*)&m->frictionImpulse.x + lane;\n\t\t\tfields[n++] = (float*)&m->frictionImpulse.y + lane;\n\t\t\tfields[n++] = (float*)&m->twistImpulse + lane;\n\t\t\tfields[n++] = (float*)&m->rollingImpulse.X + lane;\n\t\t\tfields[n++] = (float*)&m->rollingImpulse.Y + lane;\n\t\t\tfields[n++] = (float*)&m->rollingImpulse.Z + lane;\n\t\t\tfor ( int k = 0; k < 2; ++k ) fields[n++] = (float*)&m->points[k].baseSeparations + lane;\n\t\t\tb3FloatW* prepared[] = { &m->normal.X, &m->normal.Y, &m->normal.Z, &m->tangent1.X, &m->tangent1.Y, &m->tangent1.Z, &m->tangent2.X, &m->tangent2.Y, &m->tangent2.Z, &m->centerA.X, &m->centerA.Y, &m->centerA.Z, &m->centerB.X, &m->centerB.Y, &m->centerB.Z, &m->twistMass, &m->tangentMass.cxx, &m->tangentMass.cxy, &m->tangentMass.cyy, &m->tangentVelocity1, &m->tangentVelocity2 };\n\t\t\tfor ( int k = 0; k < (int)( sizeof( prepared ) / sizeof( prepared[0] ) ); ++k ) fields[n++] = (float*)prepared[k] + lane;\n\t\t\tfor ( int k = 0; k < 2; ++k )\n\t\t\t{\n\t\t\t\tb3ContactConstraintPointWide* p = m->points + k;\n\t\t\t\tb3FloatW* point[] = { &p->anchorAs.X, &p->anchorAs.Y, &p->anchorAs.Z, &p->anchorBs.X, &p->anchorBs.Y, &p->anchorBs.Z, &p->normalMasses, &p->leverArms };\n\t\t\t\tfor ( int j = 0; j < 8; ++j ) fields[n++] = (float*)point[j] + lane;\n\t\t\t}\n\t\t\tb3FloatW* base[] = { &c->base.invMassA, &c->base.invMassB, &c->base.invIA.cxx, &c->base.invIA.cxy, &c->base.invIA.cxz, &c->base.invIA.cyy, &c->base.invIA.cyz, &c->base.invIA.czz, &c->base.invIB.cxx, &c->base.invIB.cxy, &c->base.invIB.cxz, &c->base.invIB.cyy, &c->base.invIB.cyz, &c->base.invIB.czz, &c->base.friction };\n\t\t\tfor ( int k = 0; k < (int)( sizeof( base ) / sizeof( base[0] ) ); ++k ) fields[n++] = (float*)base[k] + lane;\n\t\t\treturn n;\n\t\t}\n\t}\n\treturn 0;\n}\n#endif\n\nvoid B3_WIDE( b3PushContacts_Convex )( b3SolverBlock block, b3StepContext* context )\n{\n`,
+  },
   {
     file: "src/solver.c",
     marker: "step.solver.stage",

@@ -772,6 +772,62 @@ static char* stageLines;
 static size_t stageLength;
 static FILE* stageOut;
 
+// An injection to localize a red within a step: before stage `injectType` of color `injectColor` in
+// substep `injectSubstep`, the listed bodies' velocities and substep deltas and the listed contacts'
+// constraint lanes (contactLaneFields) take supplied values. The stop then also emits those contacts'
+// lanes after its stage.
+#define MAX_INJECT 64
+static int injectSubstep = -1, injectType, injectColor;
+static int injectBodyCount, injectBodies[MAX_INJECT];
+static b3Vec3 injectV[MAX_INJECT], injectW[MAX_INJECT], injectDp[MAX_INJECT];
+static b3Quat injectDq[MAX_INJECT];
+static int injectContactCount, injectContacts[MAX_INJECT];
+#define CONTACT_LANES 64
+static float injectLanes[MAX_INJECT][CONTACT_LANES];
+
+int b3GetSIMDWidth(void);
+
+// One wide contact's lanes in a color (see b3OracleContactLanesW4), 0 if it is not there.
+static int contactLaneFields(b3StepContext* context, int color, int contactId, float** fields)
+{
+	b3GraphColor* c = context->graph->colors + color;
+	if (c->wideConstraints == NULL) return 0;
+	// The step lane builds with BOX3D_DISABLE_SIMD, whose solver is 4 wide.
+	if (b3GetSIMDWidth() != 4) fail("contact lanes read the 4-wide solver");
+	return b3OracleContactLanesW4(c->wideConstraints, c->wideConstraintCount, contactId, fields);
+}
+static int contactLanes(b3StepContext* context, int contactId, float** fields)
+{
+	for (int color = 0; color < B3_GRAPH_COLOR_COUNT; ++color)
+	{
+		int n = contactLaneFields(context, color, contactId, fields);
+		if (n > 0) return n;
+	}
+	return 0;
+}
+
+static void stageBeginHook(int type, int color, b3StepContext* context)
+{
+	if (injectSubstep < 0 || substep - (type == b3_stageIntegrateVelocities ? 0 : 1) != injectSubstep || type != injectType || color != injectColor) return;
+	for (int k = 0; k < injectBodyCount; ++k)
+	{
+		b3Body* body = b3Array_Get(stageWorld->bodies, injectBodies[k]);
+		if (body->setIndex != b3_awakeSet) fail("injected body is not awake");
+		b3BodyState* state = context->states + body->localIndex;
+		state->linearVelocity = injectV[k];
+		state->angularVelocity = injectW[k];
+		state->deltaPosition = injectDp[k];
+		state->deltaRotation = injectDq[k];
+	}
+	for (int k = 0; k < injectContactCount; ++k)
+	{
+		float* fields[CONTACT_LANES];
+		if (contactLanes(context, injectContacts[k], fields) != CONTACT_LANES) fail("injected contact has no wide constraint lane");
+		for (int f = 0; f < CONTACT_LANES; ++f) *fields[f] = injectLanes[k][f];
+	}
+	injectSubstep = -1;
+}
+
 static void stageHook(int type, int color, b3StepContext* context)
 {
 	if (type == b3_stageIntegrateVelocities) substep += 1;
@@ -800,6 +856,14 @@ static void stageHook(int type, int color, b3StepContext* context)
 		int n = jointFloats(b3GetJointSim(stageWorld, b3Array_Get(stageWorld->joints, i)), fields);
 		fprintf(out, "stagejoint %d", i);
 		for (int k = 0; k < n; ++k) putFloat(*fields[k]);
+		fprintf(out, "\n");
+	}
+	for (int k = 0; k < injectContactCount; ++k)
+	{
+		float* fields[CONTACT_LANES];
+		if (contactLanes(context, injectContacts[k], fields) != CONTACT_LANES) continue;
+		fprintf(out, "stagecontact %d", injectContacts[k]);
+		for (int f = 0; f < CONTACT_LANES; ++f) putFloat(*fields[f]);
 		fprintf(out, "\n");
 	}
 	fflush(out);
@@ -956,6 +1020,28 @@ static void loadAndStep(void)
 	stopSubstep = readInt();
 	stopType = readInt();
 	stopColor = readInt();
+	// inject substep stageType color bodyCount (index v w dp dq)... contactCount (id lanes(CONTACT_LANES))...
+	expect("inject");
+	injectSubstep = readInt();
+	injectType = readInt();
+	injectColor = readInt();
+	injectBodyCount = readInt();
+	if (injectBodyCount > MAX_INJECT) fail("too many injected bodies");
+	for (int k = 0; k < injectBodyCount; ++k)
+	{
+		injectBodies[k] = readInt();
+		injectV[k] = readVec3();
+		injectW[k] = readVec3();
+		injectDp[k] = readVec3();
+		injectDq[k] = readQuat();
+	}
+	injectContactCount = readInt();
+	if (injectContactCount > MAX_INJECT) fail("too many injected contacts");
+	for (int k = 0; k < injectContactCount; ++k)
+	{
+		injectContacts[k] = readInt();
+		for (int f = 0; f < CONTACT_LANES; ++f) injectLanes[k][f] = readFloat();
+	}
 	expect("end");
 
 	decisionCount = occurrenceCount = 0;
@@ -964,6 +1050,8 @@ static void loadAndStep(void)
 	b3World_Step(worldId, scene.timeStep, scene.subStepCount);
 	flipContactCount = flipJointCount = 0;
 	stopSubstep = -1;
+	injectSubstep = -1;
+	injectBodyCount = injectContactCount = 0;
 	if (stageOut != NULL)
 	{
 		fclose(stageOut);
@@ -1099,6 +1187,7 @@ int main(void)
 	b3OracleLimitDecision = limitDecision;
 	b3OracleTranslationDecision = translationDecision;
 	b3OracleStageHook = stageHook;
+	b3OracleStageBeginHook = stageBeginHook;
 	b3OracleRollingDecision = rollingDecision;
 	readScene();
 	writeMass();

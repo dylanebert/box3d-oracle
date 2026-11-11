@@ -95,7 +95,18 @@ export interface StepState {
   /** A stage hook: keep bodies' and joints' state after this stage of this substep (0-based) and
    * graph color (omitted for any), returned as the result's `stage`. */
   stop?: { substep: number; stage: SolverStage; color?: number };
+  /** A stage hook: before this stage of this substep and color, the listed bodies' velocities and
+   * substep deltas and the listed contacts' constraint lanes (CONTACT_LANES) take these values; a
+   * `stop` then also returns those contacts' lanes after its stage. */
+  inject?: { substep: number; stage: SolverStage; color: number; bodies: ({ index: number } & StageBody)[]; contacts: { id: number; lanes: number[] }[] };
 }
+/** A wide convex contact's lanes, in the order inject and a stage's `contacts` carry them. */
+export const CONTACT_LANES = ["normalImpulse0", "normalImpulse1", "totalNormalImpulse0", "totalNormalImpulse1", "frictionImpulseX", "frictionImpulseY", "twistImpulse", "rollingImpulseX", "rollingImpulseY", "rollingImpulseZ", "baseSeparation0", "baseSeparation1",
+  // Prepared once per step: the manifold's frame, friction centers and masses, each point's anchors,
+  // normal mass and lever arm, and the constraint's body masses and friction.
+  "normalX", "normalY", "normalZ", "tangent1X", "tangent1Y", "tangent1Z", "tangent2X", "tangent2Y", "tangent2Z", "centerAX", "centerAY", "centerAZ", "centerBX", "centerBY", "centerBZ", "twistMass", "tangentMassXX", "tangentMassXY", "tangentMassYY", "tangentVelocity1", "tangentVelocity2",
+  ...[0, 1].flatMap((k) => ["anchorAX", "anchorAY", "anchorAZ", "anchorBX", "anchorBY", "anchorBZ", "normalMass", "leverArm"].map((f) => `${f}${k}`)),
+  "invMassA", "invMassB", "invIAXX", "invIAXY", "invIAXZ", "invIAYY", "invIAYZ", "invIAZZ", "invIBXX", "invIBXY", "invIBXZ", "invIBYY", "invIBYZ", "invIBZZ", "friction"] as const;
 
 /** b3SolverStageType's per-substep stages. */
 export const SOLVER_STAGES = { velocities: 3, warm: 4, solve: 5, positions: 6, relax: 7 } as const;
@@ -141,7 +152,7 @@ export interface StepResult {
   /** Every occurrence of a hooked decision. */
   decisions: Decision[];
   /** With `stop`: awake bodies' state (null for others) and joints' impulses after that stage. */
-  stage?: { bodies: (StageBody | null)[]; joints: number[][] };
+  stage?: { bodies: (StageBody | null)[]; joints: number[][]; contacts: Record<number, number[]> };
 }
 export interface StepMass { invMass: number; localCenter: Vec3; invInertiaLocal: [Vec3, Vec3, Vec3] }
 
@@ -209,6 +220,16 @@ export function encodeState(scene: StepScene, state: StepState): string {
   const flip = state.flip ?? [];
   lines.push(`flip ${flip.length} ${flip.map((e) => `${e.entity} ${e.id} ${f(e.window ?? 0)}`).join(" ")}`.trimEnd());
   lines.push(state.stop ? `stop ${state.stop.substep} ${SOLVER_STAGES[state.stop.stage]} ${state.stop.color ?? -1}` : "stop -1 0 -1");
+  const inject = state.inject;
+  if (inject) {
+    lines.push(`inject ${inject.substep} ${SOLVER_STAGES[inject.stage]} ${inject.color} ${inject.bodies.length}`);
+    for (const b of inject.bodies) lines.push(`${b.index} ${vec(b.linearVelocity)} ${vec(b.angularVelocity)} ${vec(b.deltaPosition)} ${vec(b.deltaRotation)}`);
+    lines.push(`${inject.contacts.length}`);
+    for (const c of inject.contacts) {
+      if (c.lanes.length !== CONTACT_LANES.length) throw new Error(`contact ${c.id} carries ${c.lanes.length} lanes, not ${CONTACT_LANES.length}`);
+      lines.push(`${c.id} ${vec(c.lanes)}`);
+    }
+  } else lines.push("inject -1 0 -1 0 0");
   lines.push("end");
   return `${lines.join("\n")}\n`;
 }
@@ -226,10 +247,11 @@ export function decodeResult(lines: string[]): StepResult {
     else if (tag === "joint") { const color = int(); result.joints.push({ color, impulses: words.slice(1).map(unf) }); }
     else if (tag === "decision") result.decisions.push({ kind: words[i++] as DecisionKind, id: int(), substep: int(), stage: int(), point: int(), quantity: num(), threshold: num(), bound: num() });
     else if (tag === "ill" || tag === "near") (tag === "ill" ? result.illConditioned : result.near).push({ kind: words[i++] as DecisionKind, id: int(), quantity: num(), bound: num(), side: int() === 1 });
-    else if (tag === "stagebody" || tag === "stagejoint") {
-      result.stage ??= { bodies: [], joints: [] };
+    else if (tag === "stagebody" || tag === "stagejoint" || tag === "stagecontact") {
+      result.stage ??= { bodies: [], joints: [], contacts: {} };
       const index = int();
-      if (tag === "stagejoint") result.stage.joints[index] = words.slice(1).map(unf);
+      if (tag === "stagecontact") result.stage.contacts[index] = words.slice(1).map(unf);
+      else if (tag === "stagejoint") result.stage.joints[index] = words.slice(1).map(unf);
       else result.stage.bodies[index] = words.length > 1 ? { linearVelocity: v3(), angularVelocity: v3(), deltaPosition: v3(), deltaRotation: [num(), num(), num(), num()] } : null;
     } else if (tag === "fat") result.fatAabbs.push({ lower: v3(), upper: v3() });
     else if (tag === "pool") { const next = int(); const count = int(); result.pool = { next, free: words.slice(2, 2 + count).map(Number) }; }

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { entityOf, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, perturb, perturbScene, quantities, rotationAngle, SPREAD_SCALE, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
+import { CONTACT_LANES, entityOf, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, perturb, perturbScene, quantities, rotationAngle, SPREAD_SCALE, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
 
 // The pinned official Box3D the step lane is held at; building it fetches official main once into the cache.
 const SHA = "336263320469e5e9febfe18697ab562488f7e97a";
@@ -239,6 +239,30 @@ test("a stop keeps bodies and joints after its stage", async () => {
   expect(moving).toBeGreaterThan(0);
   expect(atVelocities.stage!.bodies[moving]!.deltaPosition).toEqual([0, 0, 0]);
   expect(atPositions.stage!.joints.length).toBe(scene.joints.length);
+}, 60_000);
+
+// Sentinel: an injection before a stage loads the bodies and contact lanes that stage reads, so
+// injecting upstream's own state there reproduces the uninjected stage, and a changed value changes it.
+test("an injection before a relax loads bodies and contact lanes; its own state round trips", async () => {
+  const index = native.findIndex((r, k) => k > 60 && r.contacts.some((c) => c.touching && c.color >= 0));
+  const state = nextState(native[index]);
+  const result = await oracle.step(state);
+  const contact = result.contacts.find((c) => c.touching && c.color >= 0)!;
+  // The first relax of substep 0 is the lowest active color's; positions leave its input.
+  const color = Math.min(...result.contacts.filter((c) => c.touching && c.color >= 0).map((c) => c.color), ...result.joints.map((j) => j.color));
+  const watch = { substep: 99, stage: "relax" as const, color, bodies: [], contacts: [{ id: contact.id, lanes: new Array(CONTACT_LANES.length).fill(0) }] };
+  const before = (await oracle.step({ ...state, stop: { substep: 0, stage: "positions" }, inject: watch })).stage!;
+  const after = (await oracle.step({ ...state, stop: { substep: 0, stage: "relax", color }, inject: watch })).stage!;
+  expect(before.contacts[contact.id]).toHaveLength(CONTACT_LANES.length);
+  const bodies = before.bodies.flatMap((b, i) => (b ? [{ index: i, ...b }] : []));
+  const inject = (change = 0) => ({ substep: 0, stage: "relax" as const, color, bodies: bodies.map((b, k) => (k === 0 ? { ...b, angularVelocity: b.angularVelocity.map((x) => x + change) as typeof b.angularVelocity } : b)), contacts: [{ id: contact.id, lanes: before.contacts[contact.id] }] });
+  const loaded = (await oracle.step({ ...state, stop: { substep: 0, stage: "relax", color }, inject: inject() })).stage!;
+  expect(loaded).toEqual(after);
+  const changed = (await oracle.step({ ...state, stop: { substep: 0, stage: "relax", color }, inject: inject(1e-3) })).stage!;
+  expect(changed.bodies[bodies[0].index]).not.toEqual(after.bodies[bodies[0].index]);
+  const lanes = before.contacts[contact.id].map((x, k) => (k === 0 ? x + 0.5 : x));
+  const pushed = (await oracle.step({ ...state, stop: { substep: 0, stage: "relax", color }, inject: { ...inject(), contacts: [{ id: contact.id, lanes }] } })).stage!;
+  expect(pushed.contacts[contact.id]).not.toEqual(after.contacts[contact.id]);
 }, 60_000);
 
 test("a spread perturbs every continuous input by at most 2^-23 and measures upstream's response", async () => {
