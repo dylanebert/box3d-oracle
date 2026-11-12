@@ -342,8 +342,9 @@ export function nextState(result: StepResult, applied: { force?: Vec3; torque?: 
  * null run measures: shallot-gpu-physics holds independentRuns' results, upstream's rounding alone,
  * through each schedule in the port's place, and calibrates an ensemble consistency test on them: two
  * statistics over a schedule, the count of quantities out of bound and the largest error-to-tolerance
- * ratio, each failing a scene above the largest of 598 null runs' values, at most 0.5% exceedance at
- * confidence 0.95, so at most 1% overall by the union bound. */
+ * ratio, each failing a scene above the second largest of 947 null runs' values, so each threshold's
+ * null exceedance probability is at most 0.5% at confidence 95% (both at once at least 90%), and a
+ * score exchangeable with the null runs' exceeds either with probability at most 4/948. */
 export const MCA_CONFIDENCE = 0.95;
 export const FAMILY_ALPHA = 0.05;
 /** 299 = ceil(ln 0.05 / ln 0.99): Table 3's count for the fallback at probability 0.99, and a row of
