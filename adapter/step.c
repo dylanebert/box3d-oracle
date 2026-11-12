@@ -23,6 +23,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #define MAX_ITEMS 1024
 
@@ -1189,9 +1191,108 @@ static void sqrtfCommand(void)
 	fflush(out);
 }
 
-int main(void)
+// A randomly rounded lane's driver (--spawn): it keeps the scene and runs each request in a fresh
+// process of this executable seeded by the request, `seeded <seed> <lines>` then that many lines, so a
+// run's rounding depends on its seed alone, never on the requests before it. Verificarlo seeds its
+// stream once per process (--seed), and random rounding draws only for inexact results. The child's
+// backend is B3_ORACLE_BACKEND with --seed, its sqrtf B3_ORACLE_SQRT_MODE ("random" takes the seed).
+static char* readLine(void)
+{
+	char* line = NULL;
+	size_t capacity = 0;
+	if (getline(&line, &capacity, stdin) < 0)
+	{
+		free(line);
+		return NULL;
+	}
+	return line;
+}
+
+static int spawnDriver(void)
+{
+	size_t sceneLength = 0, sceneCapacity = 1 << 16;
+	char* scene = malloc(sceneCapacity);
+	for (char* line; (line = readLine()) != NULL;)
+	{
+		size_t n = strlen(line);
+		while (sceneLength + n + 1 > sceneCapacity) scene = realloc(scene, sceneCapacity *= 2);
+		memcpy(scene + sceneLength, line, n);
+		sceneLength += n;
+		int end = strcmp(line, "end\n") == 0;
+		free(line);
+		if (end) break;
+	}
+	printf("ready\n");
+	fflush(stdout);
+	const char* backend = getenv("B3_ORACLE_BACKEND");
+	const char* sqrtMode = getenv("B3_ORACLE_SQRT_MODE");
+	if (backend == NULL || sqrtMode == NULL) fail("--spawn needs B3_ORACLE_BACKEND and B3_ORACLE_SQRT_MODE");
+	for (char* header; (header = readLine()) != NULL;)
+	{
+		unsigned long long seed;
+		int lines;
+		if (sscanf(header, "seeded %llu %d", &seed, &lines) != 2) fail("seeded <seed> <lines> expected");
+		free(header);
+		int toChild[2], fromChild[2];
+		if (pipe(toChild) != 0 || pipe(fromChild) != 0) fail("pipe");
+		pid_t child = fork();
+		if (child < 0) fail("fork");
+		if (child == 0)
+		{
+			char vfc[1024], sqrtValue[64];
+			snprintf(vfc, sizeof(vfc), "%s --seed=%llu", backend, seed);
+			if (strcmp(sqrtMode, "random") == 0) snprintf(sqrtValue, sizeof(sqrtValue), "random:%llu", seed);
+			else snprintf(sqrtValue, sizeof(sqrtValue), "nearest");
+			setenv("VFC_BACKENDS", vfc, 1);
+			setenv("B3_ORACLE_SQRT", sqrtValue, 1);
+			dup2(toChild[0], 0);
+			dup2(fromChild[1], 1);
+			close(toChild[0]);
+			close(toChild[1]);
+			close(fromChild[0]);
+			close(fromChild[1]);
+			execl("/proc/self/exe", "box3d-step-oracle", (char*)NULL);
+			_exit(127);
+		}
+		close(toChild[0]);
+		close(fromChild[1]);
+		FILE* request = fdopen(toChild[1], "w");
+		fwrite(scene, 1, sceneLength, request);
+		for (int i = 0; i < lines; i++)
+		{
+			char* line = readLine();
+			if (line == NULL) fail("seeded request ended early");
+			fputs(line, request);
+			free(line);
+		}
+		fclose(request);
+		FILE* response = fdopen(fromChild[0], "r");
+		char* line = NULL;
+		size_t capacity = 0;
+		int ready = 0;
+		while (getline(&line, &capacity, response) >= 0)
+		{
+			if (!ready)
+			{
+				ready = strcmp(line, "ready\n") == 0;
+				continue;
+			}
+			fputs(line, stdout);
+		}
+		free(line);
+		fclose(response);
+		int status;
+		waitpid(child, &status, 0);
+		fflush(stdout);
+	}
+	free(scene);
+	return 0;
+}
+
+int main(int argc, char** argv)
 {
 	out = stdout;
+	if (argc > 1 && strcmp(argv[1], "--spawn") == 0) return spawnDriver();
 	b3OracleSegmentDecision = segmentDecision;
 	b3OracleSeparationDecision = separationDecision;
 	b3OracleLimitDecision = limitDecision;

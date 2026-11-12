@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { readdirSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { oracleCacheDirectory } from "../bin/oracle";
 import { andersonDarling, ANDERSON_DARLING_05, chiSquareQuantile, normalQuantile, roundedNormal } from "../bin/stats";
 import { bound, CONTACT_LANES, continuousValues, deviationInflation, spreadKey, entityOf, familyQuantile, MCA_RUNS, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, quantities, rotationAngle, sohierBound, tolerance, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
 
@@ -333,11 +333,14 @@ test("Verificarlo's build of upstream rounding to nearest is the native lane bit
   }
 }, 120_000);
 
-test("seeded runs repeat: a second oracle given the same requests draws the same runs", async () => {
+test("a run depends on its request alone: another oracle, after other requests, draws the same runs", async () => {
   const again = await openStepOracle(SHA, scene);
   try {
     const state = nextState(native[120]);
+    await again.randomlyRounded(nextState(native[40]));
+    await again.independentRuns(nextState(native[60]), 7);
     expect(await again.randomlyRounded(state)).toEqual(await oracle.randomlyRounded(state));
+    expect(await again.independentRuns(state, 30)).toEqual(await oracle.independentRuns(state, 30));
   } finally {
     again.close();
   }
@@ -392,7 +395,7 @@ test("the CNH tolerance holds a fresh independent set of runs at its stated rate
   console.log(JSON.stringify({ models, rejected, individual: exceed(familyQuantile(1)) / pairs, lattice: latticeExceed(familyQuantile(1)) / (lattice.length * fresh.length) }));
 }, 60_000);
 
-test("independent runs are drawn outside the bounds' runs and repeats", async () => {
+test("independent runs are none of the bounds' runs and repeat", async () => {
   const state = nextState(native[120]);
   const runs = (await oracle.randomlyRounded(state)).map((r) => JSON.stringify(r.bodies));
   const independent = await oracle.independentRuns(state, 24);
@@ -407,40 +410,43 @@ test("independent runs are drawn outside the bounds' runs and repeats", async ()
   }
 }, 60_000);
 
-test("a cached spread is the spread: keyed by builds, scene, code, k and the exact state", async () => {
-  // The runs a spread draws depend on its lanes' earlier requests, so both oracles start fresh.
-  const state = nextState(native[130]);
-  const uncached = await openStepOracle(SHA, scene);
-  const fresh = await uncached.stepWithSpread(state, 4.25);
-  uncached.close();
-  const cached = await openStepOracle(SHA, scene, undefined, { cache: true });
-  try {
-    expect(cached.identity).toBe(oracle.identity);
-    const first = await cached.stepWithSpread(state, 4.25);
-    const started = performance.now();
-    const again = await cached.stepWithSpread(state, 4.25);
-    const read = performance.now() - started;
-    for (const s of [first, again]) {
-      expect(s.result).toEqual(fresh.result);
-      expect(s.kept).toEqual(fresh.kept);
-      expect(s.all()).toEqual(fresh.all());
-      expect(s.unstable).toEqual(fresh.unstable);
+test("cold, warm and partly warm caches give bit-equal spreads", async () => {
+  const states = [100, 130, 160].map((k) => nextState(native[k]));
+  const cold = mkdtempSync(join(tmpdir(), "spreads-"));
+  const partial = mkdtempSync(join(tmpdir(), "spreads-"));
+  const spreadsOf = async (cache: string | undefined, order: number[]) => {
+    const o = await openStepOracle(SHA, scene, undefined, cache ? { cache } : {});
+    try {
+      const out: unknown[] = [];
+      for (const i of order) {
+        const s = await o.stepWithSpread(states[i], 4.25);
+        out[i] = { ...s, all: s.all() };
+      }
+      return out;
+    } finally {
+      o.close();
     }
-    expect(read).toBeLessThan(50);
-    // A state one bit away is another key.
-    const moving = state.bodies.findIndex((b) => b.linearVelocity[1] !== 0);
-    const moved = { ...state, bodies: state.bodies.map((b, i) => (i === moving ? { ...b, linearVelocity: [b.linearVelocity[0], Math.fround(b.linearVelocity[1] * (1 + 2 ** -23)), b.linearVelocity[2]] as typeof b.linearVelocity } : b)) };
-    expect(moved.bodies[moving].linearVelocity[1]).not.toBe(state.bodies[moving].linearVelocity[1]);
-    const keys = [spreadKey(cached.identity, 4.25, scene, state), spreadKey(cached.identity, 4.25, scene, moved), spreadKey(cached.identity, 4.5, scene, state)];
-    expect(new Set(keys).size).toBe(3);
-    await cached.stepWithSpread(moved, 4.25);
-    await cached.stepWithSpread(state, 4.5);
-    const files = new Set(readdirSync(join(oracleCacheDirectory(), "spreads")));
-    for (const key of keys) expect(files.has(`${key}.json`)).toBe(true);
+  };
+  try {
+    const uncached = await spreadsOf(undefined, [0, 1, 2]);
+    expect(await spreadsOf(cold, [0, 1, 2])).toEqual(uncached);
+    expect(readdirSync(cold).length).toBe(3);
+    const started = performance.now();
+    expect(await spreadsOf(cold, [2, 0, 1])).toEqual(uncached);
+    expect(performance.now() - started).toBeLessThan(2000);
+    // Partly warm: one state cached, the others computed after it, in another order.
+    const one = readdirSync(cold).find((f) => f.startsWith(spreadKey(oracle.identity, 4.25, scene, states[1])))!;
+    cpSync(join(cold, one), join(partial, one));
+    expect(await spreadsOf(partial, [1, 2, 0])).toEqual(uncached);
+    // A state one ulp away, and another k, are other keys.
+    const moving = states[0].bodies.findIndex((b) => b.linearVelocity[1] !== 0);
+    const moved = { ...states[0], bodies: states[0].bodies.map((b, i) => (i === moving ? { ...b, linearVelocity: [b.linearVelocity[0], Math.fround(b.linearVelocity[1] * (1 + 2 ** -23)), b.linearVelocity[2]] as typeof b.linearVelocity } : b)) };
+    expect(new Set([spreadKey(oracle.identity, 4.25, scene, states[0]), spreadKey(oracle.identity, 4.25, scene, moved), spreadKey(oracle.identity, 4.5, scene, states[0])]).size).toBe(3);
   } finally {
-    cached.close();
+    rmSync(cold, { recursive: true, force: true });
+    rmSync(partial, { recursive: true, force: true });
   }
-}, 120_000);
+}, 300_000);
 
 test("a vector's bound is its components' and a rotation's is an angle", async () => {
   const state = nextState(native[120]);

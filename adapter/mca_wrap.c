@@ -9,7 +9,7 @@
 // sqrtf is randomly rounded. Verificarlo instruments + - * / but not libm, and sqrtf is the one libm
 // call whose result Box3D's step rounds. B3_ORACLE_SQRT selects: "nearest" calls the real sqrtf;
 // "random:<seed>" takes the correctly rounded double sqrt and rounds it to one of its two neighbouring
-// floats with probability by distance, from a stream seeded per lane, keeping exact results exact.
+// floats with probability by distance, from a stream seeded per run, keeping exact results exact.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
