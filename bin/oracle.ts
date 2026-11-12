@@ -499,7 +499,7 @@ export const VERIFICARLO_IMAGE = "verificarlo/verificarlo@sha256:f024f8e3bba2573
  * the one libm call whose result the step rounds, is kept a call (-fno-builtin-sqrtf; the build fails
  * on any inlined square root) and wrapped at link time by adapter/mca_wrap.c, which also freezes clock_gettime so that
  * profiling arithmetic on wall time does not make seeded runs unrepeatable. */
-export function buildStepOracleMca(sha: string): string {
+export function buildStepOracleMca(sha: string, options: { build?: boolean } = {}): string {
   requireFullSha(sha);
   const member = join(import.meta.dir, "..");
   const box3d = ["-std=gnu17", "-O3", "-DNDEBUG", "-ffp-contract=off", "-fno-vectorize", "-fno-slp-vectorize", "-fno-builtin-sqrtf", "-fvisibility=hidden", "-DBOX3D_DISABLE_SIMD", "-DBOX3D_VALIDATE", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-I/src/box3d/include", "-I/src/box3d/src"];
@@ -516,7 +516,7 @@ export function buildStepOracleMca(sha: string): string {
   ].join("\n");
   const key = digest([sha, hookDigest(), readFileSync(adapter, "utf8"), readFileSync(wrap, "utf8"), dockerfile].join("\n")).slice(0, 16);
   const tag = `box3d-step-oracle-mca:${sha.slice(0, 12)}-${key}`;
-  if (command("docker", ["image", "inspect", tag]).status === 0) return tag;
+  if (options.build === false || command("docker", ["image", "inspect", tag]).status === 0) return tag;
   const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
   const { official, patched } = patchedStepSource(sha, cache);
   const context = join(cache, "step-builds", `${sha}-${key}-mca`);
@@ -531,6 +531,48 @@ export function buildStepOracleMca(sha: string): string {
   verifyPristine(official, sha);
   rmSync(context, { recursive: true, force: true });
   return tag;
+}
+
+/** The randomly rounded lane built by a native Verificarlo (VERIFICARLO_PREFIX, its install prefix,
+ * whose lib/ holds the backends), as an executable under the cache; the same flags, wrappers and
+ * checks as buildStepOracleMca's image. The adapter and wrappers are compiled by VFC_CLANG (default
+ * the clang on PATH), which should be the LLVM Verificarlo was built with. */
+export function buildStepOracleVfc(sha: string): string {
+  requireFullSha(sha);
+  const prefix = process.env.VERIFICARLO_PREFIX;
+  if (!prefix) throw new OracleError("VERIFICARLO_PREFIX names no Verificarlo install");
+  const member = join(import.meta.dir, "..");
+  const vfc = join(prefix, "bin", "verificarlo-c");
+  const clang = process.env.VFC_CLANG ?? "clang";
+  const box3d = ["-std=gnu17", "-O3", "-DNDEBUG", "-ffp-contract=off", "-fno-vectorize", "-fno-slp-vectorize", "-fno-builtin-sqrtf", "-fvisibility=hidden", "-DBOX3D_DISABLE_SIMD", "-DBOX3D_VALIDATE", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS"];
+  const adapterFlags = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-DNDEBUG"];
+  const adapter = join(member, "adapter", "step.c");
+  const wrap = join(member, "adapter", "mca_wrap.c");
+  const versions = [checked(vfc, ["--version"]).stdout.trim(), checked(clang, ["--version"]).stdout.split("\n")[0]];
+  const key = digest([sha, hookDigest(), readFileSync(adapter, "utf8"), readFileSync(wrap, "utf8"), ...box3d, ...adapterFlags, ...versions].join("\n")).slice(0, 16);
+  const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
+  const executable = join(cache, "step-builds", `${sha}-${key}-vfc`, "box3d-step-oracle");
+  if (existsSync(executable)) return executable;
+  const { official, patched } = patchedStepSource(sha, cache);
+  const build = join(cache, "step-builds", `${sha}-${key}-vfc-work`);
+  rmSync(build, { recursive: true, force: true });
+  mkdirSync(build, { recursive: true });
+  const include = [`-I${join(patched, "include")}`, `-I${join(patched, "src")}`];
+  const script = [
+    "set -e",
+    `ls ${join(patched, "src")}/*.c | xargs -P "$(nproc)" -I{} sh -c '${vfc} ${[...box3d, ...include].join(" ")} -c {} -o "$(basename {} .c).o" 2> "$(basename {} .c).log"' || { cat *.log; exit 1; }`,
+    `if cat *.log | grep -i "vector size"; then exit 1; fi`,
+    `if objdump -d *.o | grep -Ew "fsqrt|sqrtss|sqrtsd"; then echo "a square root is inlined past the sqrtf wrapper"; exit 1; fi`,
+    `${clang} ${[...adapterFlags, ...include].join(" ")} -c ${adapter} -o step.o`,
+    `${clang} -O2 -std=gnu11 -Wall -Wextra -Werror -c ${wrap} -o mca_wrap.o`,
+    `${vfc} *.o -lm -Wl,--wrap=sqrtf,--wrap=clock_gettime -o box3d-step-oracle`,
+  ].join("\n");
+  checked("bash", ["-c", script], build);
+  verifyPristine(official, sha);
+  mkdirSync(dirname(executable), { recursive: true });
+  checked("cp", [join(build, "box3d-step-oracle"), executable]);
+  rmSync(build, { recursive: true, force: true });
+  return executable;
 }
 
 /** The step lane's executable for an official SHA, built once per SHA and adapter/hook digest under the cache. */

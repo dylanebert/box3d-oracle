@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildStepOracle, buildStepOracleMca, oracleCacheDirectory } from "./oracle";
+import { buildStepOracle, buildStepOracleMca, buildStepOracleVfc, oracleCacheDirectory } from "./oracle";
 import { ANDERSON_DARLING_05, andersonDarling, chiSquareQuantile, normalQuantile, roundedNormal } from "./stats";
 
 export type Vec3 = [number, number, number];
@@ -620,13 +620,16 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
   const executable = buildStepOracle(sha);
   // Everything a spread depends on beyond the state and k: both builds, the rounding, the scene and
   // the code that bounds the runs.
-  const tag = buildStepOracleMca(sha);
+  // A native Verificarlo (VERIFICARLO_PREFIX) builds the lane executable; otherwise its Docker image.
+  const native = process.env.VERIFICARLO_PREFIX ? buildStepOracleVfc(sha) : undefined;
+  // The image is named before it is built, so a host that never draws a run never needs Docker.
+  const tag = native ?? buildStepOracleMca(sha, { build: false });
   const identity = createHash("sha256")
     .update([executable, tag, JSON.stringify(rounding), MCA_BACKEND, encodeScene(scene), readFileSync(join(import.meta.dir, "step.ts"), "utf8"), readFileSync(join(import.meta.dir, "stats.ts"), "utf8")].join("\n"))
     .digest("hex");
   const spreads = options.cache ?? "";
-  const start = async (argv: string[]) => {
-    const child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+  const start = async (argv: string[], env?: Record<string, string | undefined>) => {
+    const child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "inherit", env });
     const reader = child.stdout.getReader();
     const decoder = new TextDecoder();
     let buffered = "";
@@ -685,6 +688,11 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
     const backend = rounding.arithmetic === "random" ? MCA_BACKEND : "libinterflop_mca.so --mode=ieee";
     const env = ["-e", "VFC_BACKENDS=libinterflop_ieee.so", "-e", `B3_ORACLE_BACKEND=${backend}`, "-e", `B3_ORACLE_SQRT_MODE=${rounding.sqrt}`, "-e", "VFC_BACKENDS_SILENT_LOAD=True", "-e", "VFC_BACKENDS_LOGGER=False"];
     // No log driver: the daemon would otherwise keep every result a lane writes, for as long as it runs.
+    if (native) {
+      const vars = Object.fromEntries(env.filter((_, i) => i % 2 === 1).map((pair) => pair.split(/=(.*)/s).slice(0, 2)));
+      return start([native, "--spawn"], { ...process.env, ...vars, LD_LIBRARY_PATH: join(process.env.VERIFICARLO_PREFIX!, "lib") });
+    }
+    buildStepOracleMca(sha);
     return start(["docker", "run", "--rm", "-i", "--network=none", "--log-driver=none", ...env, tag, "box3d-step-oracle", "--spawn"]);
   };
   const lanes = async () => (stochastic ??= await Promise.all(Array.from({ length: MCA_LANES }, () => startLane())));
