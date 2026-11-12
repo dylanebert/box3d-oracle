@@ -389,15 +389,16 @@ test("the CNH tolerance holds a fresh independent set of runs at its stated rate
   console.log(JSON.stringify({ models, rejected, individual: exceed(familyQuantile(1)) / pairs, lattice: latticeExceed(familyQuantile(1)) / (lattice.length * fresh.length) }));
 }, 60_000);
 
-test("an independent run is drawn outside the bounds' runs and repeats", async () => {
+test("independent runs are drawn outside the bounds' runs and repeats", async () => {
   const state = nextState(native[120]);
   const runs = (await oracle.randomlyRounded(state)).map((r) => JSON.stringify(r.bodies));
-  const independent = await oracle.independentRun(state);
-  expect(runs).not.toContain(JSON.stringify(independent.bodies));
-  expect(independent.bodies).not.toEqual(native[121].bodies);
+  const independent = await oracle.independentRuns(state, 24);
+  for (const run of independent) expect(runs).not.toContain(JSON.stringify(run.bodies));
+  expect(new Set(independent.map((run) => JSON.stringify(run.bodies))).size).toBe(24);
+  expect(independent[0].bodies).not.toEqual(native[121].bodies);
   const again = await openStepOracle(SHA, scene);
   try {
-    expect(await again.independentRun(state)).toEqual(independent);
+    expect(await again.independentRuns(state, 24)).toEqual(independent);
   } finally {
     again.close();
   }
