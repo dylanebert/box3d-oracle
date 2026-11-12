@@ -882,10 +882,23 @@ static void stageHook(int type, int color, b3StepContext* context)
 //   (featureId normalImpulse) per point, frictionImpulse(3) twistImpulse rollingImpulse(3) cache words
 // flip count (contact|joint id window)... (entities whose decisions within max(bound, window) take the other side)
 // stop substep stageType color (substep -1 for none; see stageHook)
+// B3_ORACLE_PROFILE: a child under the --spawn driver reports where its time went in `profile` lines,
+// which the driver sums and does not relay. Wall microseconds by gettimeofday, since the Verificarlo
+// build freezes clock_gettime.
+static int profiling;
+static double now(void)
+{
+	struct timeval t;
+	gettimeofday(&t, NULL);
+	return t.tv_sec * 1e6 + t.tv_usec;
+}
+
 static void loadAndStep(void)
 {
+	double started = profiling ? now() : 0.0;
 	b3WorldId worldId = buildWorld();
 	b3World* world = b3GetWorldFromId(worldId);
+	double built = profiling ? now() : 0.0;
 
 	for (int i = 0; i < scene.bodyCount; ++i)
 	{
@@ -1050,7 +1063,9 @@ static void loadAndStep(void)
 	decisionCount = occurrenceCount = 0;
 	substep = 0;
 	stageWorld = world;
+	double loaded = profiling ? now() : 0.0;
 	b3World_Step(worldId, scene.timeStep, scene.subStepCount);
+	double stepped = profiling ? now() : 0.0;
 	flipContactCount = flipJointCount = 0;
 	stopSubstep = -1;
 	injectSubstep = -1;
@@ -1066,9 +1081,11 @@ static void loadAndStep(void)
 	writeIll();
 
 	writeResult(world);
+	double written = profiling ? now() : 0.0;
+	b3DestroyWorld(worldId);
+	if (profiling) fprintf(out, "profile step %.0f %.0f %.0f %.0f %.0f\n", built - started, loaded - built, stepped - loaded, written - stepped, now() - written);
 	fprintf(out, "end\n");
 	fflush(out);
-	b3DestroyWorld(worldId);
 }
 
 // rollout n: the scene stepped n times without reloading, each step's state as a step response.
@@ -1230,6 +1247,9 @@ static int spawnDriver(void)
 	int profile = getenv("B3_ORACLE_PROFILE") != NULL;
 	double startup = 0.0, stepping = 0.0;
 	long runs = 0;
+	// Summed child parts: exec and load to main, reading the scene, the mass world; and per step the
+	// world's build, loading the state, the step, writing the result, destroying the world.
+	double parts[8] = { 0 };
 	const char* backend = getenv("B3_ORACLE_BACKEND");
 	const char* sqrtMode = getenv("B3_ORACLE_SQRT_MODE");
 	if (backend == NULL || sqrtMode == NULL) fail("--spawn needs B3_ORACLE_BACKEND and B3_ORACLE_SQRT_MODE");
@@ -1254,6 +1274,7 @@ static int spawnDriver(void)
 			else snprintf(sqrtValue, sizeof(sqrtValue), "nearest");
 			setenv("VFC_BACKENDS", vfc, 1);
 			setenv("B3_ORACLE_SQRT", sqrtValue, 1);
+			setenv("B3_ORACLE_CHILD", "1", 1);
 			dup2(toChild[0], 0);
 			dup2(fromChild[1], 1);
 			close(toChild[0]);
@@ -1285,6 +1306,23 @@ static int spawnDriver(void)
 			{
 				ready = strcmp(line, "ready\n") == 0;
 				if (ready) gettimeofday(&readied, NULL);
+				double entered, read, mass;
+				if (sscanf(line, "profile start %lf %lf %lf", &entered, &read, &mass) == 3)
+				{
+					parts[0] += (entered - (forked.tv_sec * 1e6 + forked.tv_usec)) * 1e-3;
+					parts[1] += read * 1e-3;
+					parts[2] += mass * 1e-3;
+				}
+				continue;
+			}
+			double b, l, st, w, d;
+			if (sscanf(line, "profile step %lf %lf %lf %lf %lf", &b, &l, &st, &w, &d) == 5)
+			{
+				parts[3] += b * 1e-3;
+				parts[4] += l * 1e-3;
+				parts[5] += st * 1e-3;
+				parts[6] += w * 1e-3;
+				parts[7] += d * 1e-3;
 				continue;
 			}
 			fputs(line, stdout);
@@ -1299,7 +1337,8 @@ static int spawnDriver(void)
 		stepping += (finished.tv_sec - readied.tv_sec) * 1e3 + (finished.tv_usec - readied.tv_usec) * 1e-3;
 		runs++;
 	}
-	if (profile) fprintf(stderr, "lane profile: %ld runs, start-up %.1f ms, step %.1f ms\n", runs, startup, stepping);
+	if (profile)
+		fprintf(stderr, "lane profile: %ld runs, start-up %.1f ms, step %.1f ms; exec %.1f, scene %.1f, mass %.1f, build %.1f, load %.1f, step %.1f, write %.1f, destroy %.1f ms\n", runs, startup, stepping, parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]);
 	free(scene);
 	return 0;
 }
@@ -1315,8 +1354,12 @@ int main(int argc, char** argv)
 	b3OracleStageHook = stageHook;
 	b3OracleStageBeginHook = stageBeginHook;
 	b3OracleRollingDecision = rollingDecision;
+	double entered = now();
+	profiling = getenv("B3_ORACLE_PROFILE") != NULL && getenv("B3_ORACLE_CHILD") != NULL;
 	readScene();
+	double read = now();
 	writeMass();
+	if (profiling) fprintf(out, "profile start %.0f %.0f %.0f\n", entered, read - entered, now() - read);
 	fprintf(out, "ready\n");
 	fflush(out);
 	while (scanf("%255s", token) == 1)
