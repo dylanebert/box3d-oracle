@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -1224,6 +1225,11 @@ static int spawnDriver(void)
 	}
 	printf("ready\n");
 	fflush(stdout);
+	// B3_ORACLE_PROFILE: on exit, the summed time from fork to the child's ready (its start-up: exec,
+	// backend load and world build) and from ready to its last line (the step and its output).
+	int profile = getenv("B3_ORACLE_PROFILE") != NULL;
+	double startup = 0.0, stepping = 0.0;
+	long runs = 0;
 	const char* backend = getenv("B3_ORACLE_BACKEND");
 	const char* sqrtMode = getenv("B3_ORACLE_SQRT_MODE");
 	if (backend == NULL || sqrtMode == NULL) fail("--spawn needs B3_ORACLE_BACKEND and B3_ORACLE_SQRT_MODE");
@@ -1235,6 +1241,9 @@ static int spawnDriver(void)
 		free(header);
 		int toChild[2], fromChild[2];
 		if (pipe(toChild) != 0 || pipe(fromChild) != 0) fail("pipe");
+		// gettimeofday, since the Verificarlo build freezes clock_gettime.
+		struct timeval forked, readied, finished;
+		gettimeofday(&forked, NULL);
 		pid_t child = fork();
 		if (child < 0) fail("fork");
 		if (child == 0)
@@ -1275,6 +1284,7 @@ static int spawnDriver(void)
 			if (!ready)
 			{
 				ready = strcmp(line, "ready\n") == 0;
+				if (ready) gettimeofday(&readied, NULL);
 				continue;
 			}
 			fputs(line, stdout);
@@ -1284,7 +1294,12 @@ static int spawnDriver(void)
 		int status;
 		waitpid(child, &status, 0);
 		fflush(stdout);
+		gettimeofday(&finished, NULL);
+		startup += (readied.tv_sec - forked.tv_sec) * 1e3 + (readied.tv_usec - forked.tv_usec) * 1e-3;
+		stepping += (finished.tv_sec - readied.tv_sec) * 1e3 + (finished.tv_usec - readied.tv_usec) * 1e-3;
+		runs++;
 	}
+	if (profile) fprintf(stderr, "lane profile: %ld runs, start-up %.1f ms, step %.1f ms\n", runs, startup, stepping);
 	free(scene);
 	return 0;
 }
