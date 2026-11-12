@@ -1,6 +1,7 @@
 // Step oracle: loads the state one b3World_Step reads into upstream structs, steps once and
 // writes the state after it. Protocol: whitespace tokens on stdin and stdout, floats as eight
 // hexadecimal digits of their bits, "-" for an upstream default. See bin/step.ts.
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include <float.h>
 #include <math.h>
@@ -23,9 +24,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dlfcn.h>
 #include <sys/time.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #define MAX_ITEMS 1024
 
@@ -882,8 +882,8 @@ static void stageHook(int type, int color, b3StepContext* context)
 //   (featureId normalImpulse) per point, frictionImpulse(3) twistImpulse rollingImpulse(3) cache words
 // flip count (contact|joint id window)... (entities whose decisions within max(bound, window) take the other side)
 // stop substep stageType color (substep -1 for none; see stageHook)
-// B3_ORACLE_PROFILE: a child under the --spawn driver reports where its time went in `profile` lines,
-// which the driver sums and does not relay. Wall microseconds by gettimeofday, since the Verificarlo
+// B3_ORACLE_PROFILE: a randomly rounded lane reports each request's parts in a `profile` line before
+// its `end`, which the client sums and does not decode. Wall microseconds by gettimeofday, since the Verificarlo
 // build freezes clock_gettime.
 static int profiling;
 static double now(void)
@@ -1209,144 +1209,44 @@ static void sqrtfCommand(void)
 	fflush(out);
 }
 
-// A randomly rounded lane's driver (--spawn): it keeps the scene and runs each request in a fresh
-// process of this executable seeded by the request, `seeded <seed> <lines>` then that many lines, so a
-// run's rounding depends on its seed alone, never on the requests before it. Verificarlo seeds its
-// stream once per process (--seed), and random rounding draws only for inexact results. The child's
-// backend is B3_ORACLE_BACKEND with --seed, its sqrtf B3_ORACLE_SQRT_MODE ("random" takes the seed).
-static char* readLine(void)
+// A randomly rounded lane reseeds per request, so a run's rounding depends on its seed alone, never on
+// the requests before it. The MCA backend seeds its stream on its first draw, from --seed XOR a thread
+// counter it increments (mcaquad_global_tid), and never again; mcaquad_push_seed saves the stream as it
+// is and mcaquad_pop_seed restores it. Saved before any draw, restored before each `seeded <seed>`
+// request with the counter set so the stream's seed is the request's (31 bits, the lane's --seed 0),
+// each request draws the same as a fresh process seeded alike. The sqrtf wrapper takes the whole seed.
+typedef void PushSeed(uint64_t seed);
+typedef void PopSeed(void);
+static PopSeed* popSeed;
+static int* globalTid;
+void b3OracleSeedSqrt(uint64_t seed) __attribute__((weak));
+
+static void saveStream(void)
 {
-	char* line = NULL;
-	size_t capacity = 0;
-	if (getline(&line, &capacity, stdin) < 0)
-	{
-		free(line);
-		return NULL;
-	}
-	return line;
+	void* backend = dlopen("libinterflop_mca.so", RTLD_NOW | RTLD_NOLOAD);
+	if (backend == NULL) return;
+	PushSeed* pushSeed = (PushSeed*)dlsym(backend, "mcaquad_push_seed");
+	popSeed = (PopSeed*)dlsym(backend, "mcaquad_pop_seed");
+	globalTid = (int*)dlsym(backend, "mcaquad_global_tid");
+	if (pushSeed == NULL || popSeed == NULL || globalTid == NULL) fail("the MCA backend has no push, pop or thread counter");
+	pushSeed(0);
 }
 
-static int spawnDriver(void)
+static void reseed(void)
 {
-	size_t sceneLength = 0, sceneCapacity = 1 << 16;
-	char* scene = malloc(sceneCapacity);
-	for (char* line; (line = readLine()) != NULL;)
-	{
-		size_t n = strlen(line);
-		while (sceneLength + n + 1 > sceneCapacity) scene = realloc(scene, sceneCapacity *= 2);
-		memcpy(scene + sceneLength, line, n);
-		sceneLength += n;
-		int end = strcmp(line, "end\n") == 0;
-		free(line);
-		if (end) break;
-	}
-	printf("ready\n");
-	fflush(stdout);
-	// B3_ORACLE_PROFILE: on exit, the summed time from fork to the child's ready (its start-up: exec,
-	// backend load and world build) and from ready to its last line (the step and its output).
-	int profile = getenv("B3_ORACLE_PROFILE") != NULL;
-	double startup = 0.0, stepping = 0.0;
-	long runs = 0;
-	// Summed child parts: exec and load to main, reading the scene, the mass world; and per step the
-	// world's build, loading the state, the step, writing the result, destroying the world.
-	double parts[8] = { 0 };
-	const char* backend = getenv("B3_ORACLE_BACKEND");
-	const char* sqrtMode = getenv("B3_ORACLE_SQRT_MODE");
-	if (backend == NULL || sqrtMode == NULL) fail("--spawn needs B3_ORACLE_BACKEND and B3_ORACLE_SQRT_MODE");
-	for (char* header; (header = readLine()) != NULL;)
-	{
-		unsigned long long seed;
-		int lines;
-		if (sscanf(header, "seeded %llu %d", &seed, &lines) != 2) fail("seeded <seed> <lines> expected");
-		free(header);
-		int toChild[2], fromChild[2];
-		if (pipe(toChild) != 0 || pipe(fromChild) != 0) fail("pipe");
-		// gettimeofday, since the Verificarlo build freezes clock_gettime.
-		struct timeval forked, readied, finished;
-		gettimeofday(&forked, NULL);
-		pid_t child = fork();
-		if (child < 0) fail("fork");
-		if (child == 0)
-		{
-			char vfc[1024], sqrtValue[64];
-			snprintf(vfc, sizeof(vfc), "%s --seed=%llu", backend, seed);
-			if (strcmp(sqrtMode, "random") == 0) snprintf(sqrtValue, sizeof(sqrtValue), "random:%llu", seed);
-			else snprintf(sqrtValue, sizeof(sqrtValue), "nearest");
-			setenv("VFC_BACKENDS", vfc, 1);
-			setenv("B3_ORACLE_SQRT", sqrtValue, 1);
-			setenv("B3_ORACLE_CHILD", "1", 1);
-			dup2(toChild[0], 0);
-			dup2(fromChild[1], 1);
-			close(toChild[0]);
-			close(toChild[1]);
-			close(fromChild[0]);
-			close(fromChild[1]);
-			execl("/proc/self/exe", "box3d-step-oracle", (char*)NULL);
-			_exit(127);
-		}
-		close(toChild[0]);
-		close(fromChild[1]);
-		FILE* request = fdopen(toChild[1], "w");
-		fwrite(scene, 1, sceneLength, request);
-		for (int i = 0; i < lines; i++)
-		{
-			char* line = readLine();
-			if (line == NULL) fail("seeded request ended early");
-			fputs(line, request);
-			free(line);
-		}
-		fclose(request);
-		FILE* response = fdopen(fromChild[0], "r");
-		char* line = NULL;
-		size_t capacity = 0;
-		int ready = 0;
-		while (getline(&line, &capacity, response) >= 0)
-		{
-			if (!ready)
-			{
-				ready = strcmp(line, "ready\n") == 0;
-				if (ready) gettimeofday(&readied, NULL);
-				double entered, read, mass;
-				if (sscanf(line, "profile start %lf %lf %lf", &entered, &read, &mass) == 3)
-				{
-					parts[0] += (entered - (forked.tv_sec * 1e6 + forked.tv_usec)) * 1e-3;
-					parts[1] += read * 1e-3;
-					parts[2] += mass * 1e-3;
-				}
-				continue;
-			}
-			double b, l, st, w, d;
-			if (sscanf(line, "profile step %lf %lf %lf %lf %lf", &b, &l, &st, &w, &d) == 5)
-			{
-				parts[3] += b * 1e-3;
-				parts[4] += l * 1e-3;
-				parts[5] += st * 1e-3;
-				parts[6] += w * 1e-3;
-				parts[7] += d * 1e-3;
-				continue;
-			}
-			fputs(line, stdout);
-		}
-		free(line);
-		fclose(response);
-		int status;
-		waitpid(child, &status, 0);
-		fflush(stdout);
-		gettimeofday(&finished, NULL);
-		startup += (readied.tv_sec - forked.tv_sec) * 1e3 + (readied.tv_usec - forked.tv_usec) * 1e-3;
-		stepping += (finished.tv_sec - readied.tv_sec) * 1e3 + (finished.tv_usec - readied.tv_usec) * 1e-3;
-		runs++;
-	}
-	if (profile)
-		fprintf(stderr, "lane profile: %ld runs, start-up %.1f ms, step %.1f ms; exec %.1f, scene %.1f, mass %.1f, build %.1f, load %.1f, step %.1f, write %.1f, destroy %.1f ms\n", runs, startup, stepping, parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]);
-	free(scene);
-	return 0;
+	unsigned long long seed = strtoull(next(), NULL, 10);
+	if (popSeed == NULL) fail("seeded request on a lane without the MCA backend");
+	popSeed();
+	*globalTid = (int)(seed % 2147483646ULL);
+	if (b3OracleSeedSqrt) b3OracleSeedSqrt(seed);
 }
 
 int main(int argc, char** argv)
 {
+	(void)argc;
+	(void)argv;
 	out = stdout;
-	if (argc > 1 && strcmp(argv[1], "--spawn") == 0) return spawnDriver();
+	saveStream();
 	b3OracleSegmentDecision = segmentDecision;
 	b3OracleSeparationDecision = separationDecision;
 	b3OracleLimitDecision = limitDecision;
@@ -1354,22 +1254,20 @@ int main(int argc, char** argv)
 	b3OracleStageHook = stageHook;
 	b3OracleStageBeginHook = stageBeginHook;
 	b3OracleRollingDecision = rollingDecision;
-	double entered = now();
-	profiling = getenv("B3_ORACLE_PROFILE") != NULL && getenv("B3_ORACLE_CHILD") != NULL;
+	profiling = getenv("B3_ORACLE_PROFILE") != NULL && popSeed != NULL;
 	readScene();
-	double read = now();
 	writeMass();
-	if (profiling) fprintf(out, "profile start %.0f %.0f %.0f\n", entered, read - entered, now() - read);
 	fprintf(out, "ready\n");
 	fflush(out);
 	while (scanf("%255s", token) == 1)
 	{
-		if (strcmp(token, "step") == 0) loadAndStep();
+		if (strcmp(token, "seeded") == 0) reseed();
+		else if (strcmp(token, "step") == 0) loadAndStep();
 		else if (strcmp(token, "rollout") == 0) rollout();
 		else if (strcmp(token, "segment") == 0) segment();
 		else if (strcmp(token, "decide") == 0) decideCommand();
 		else if (strcmp(token, "sqrtf") == 0) sqrtfCommand();
-		else fail("step, rollout, segment, decide or sqrtf expected");
+		else fail("seeded, step, rollout, segment, decide or sqrtf expected");
 	}
 	return 0;
 }

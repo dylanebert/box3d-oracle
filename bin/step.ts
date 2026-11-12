@@ -2,6 +2,7 @@
 // complete loaded state. Numbers cross as float32 bits; an omitted optional field is upstream's default.
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import { buildStepOracle, buildStepOracleMca, buildStepOracleVfc, oracleCacheDirectory } from "./oracle";
 import { ANDERSON_DARLING_05, andersonDarling, chiSquareQuantile, normalQuantile, roundedNormal } from "./stats";
@@ -349,10 +350,11 @@ export const FAMILY_ALPHA = 0.05;
  * Table 4, where the chi-square inflation of a deviation is 1.07. */
 export const MCA_RUNS = Math.ceil(Math.log(1 - MCA_CONFIDENCE) / Math.log(0.99));
 export const MCA_BACKEND = "libinterflop_mca.so --mode=rr --precision-binary32=24 --precision-binary64=53";
-/** Processes the runs are spread over. Each run executes in a fresh process seeded from its own key
- * (runSeed: the oracle's identity, the exact request and the run's place), so a run, and a spread or
- * null score computed from runs, depends on its inputs alone, never on what the lanes ran before. */
-export const MCA_LANES = 12;
+/** Long-lived processes the runs are spread over, one per core: more only queue. Each run reseeds its
+ * lane from its own key (runSeed: the oracle's identity, the exact request and the run's place), so a
+ * run, and a spread or null score computed from runs, depends on its inputs alone, never on what the
+ * lane ran before or on how many lanes there are. */
+export const MCA_LANES = availableParallelism();
 
 /** A run's seed: the request's key (identity and exact request text), the runs' purpose (`bound` for
  * a spread's, `null` for independentRuns', which no bound sees) and its index, as 60 bits. */
@@ -613,7 +615,9 @@ function parseSpread(text: string): Spread {
 /** Where an oracle's time goes, summed over every request since the last reset, in ms: encoding
  * states, waiting on a lane for its answer (summed over lanes, so it can exceed wall time), decoding
  * answers and bounding runs. */
-export const stepProfile = { requests: 0, encode: 0, laneWait: 0, decode: 0, bounds: 0 };
+export const stepProfile = { requests: 0, encode: 0, laneWait: 0, decode: 0, bounds: 0, laneBuild: 0, laneLoad: 0, laneStep: 0, laneWrite: 0, laneDestroy: 0 };
+/** A lane's `profile step` parts under B3_ORACLE_PROFILE, summed over lanes. */
+const LANE_PARTS = ["laneBuild", "laneLoad", "laneStep", "laneWrite", "laneDestroy"] as const;
 export function resetStepProfile() {
   for (const key of Object.keys(stepProfile) as (keyof typeof stepProfile)[]) stepProfile[key] = 0;
 }
@@ -693,17 +697,14 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
   });
   // The randomly rounded lanes, started at the first spread.
   let stochastic: Awaited<ReturnType<typeof start>>[] | undefined;
-  // A lane is adapter/step.c's --spawn driver, which runs each seeded request in a fresh process.
+  // A lane is one long-lived process that reseeds itself per `seeded` request (adapter/step.c).
   const startLane = () => {
     const backend = rounding.arithmetic === "random" ? MCA_BACKEND : "libinterflop_mca.so --mode=ieee";
-    const env = ["-e", "VFC_BACKENDS=libinterflop_ieee.so", "-e", `B3_ORACLE_BACKEND=${backend}`, "-e", `B3_ORACLE_SQRT_MODE=${rounding.sqrt}`, "-e", "VFC_BACKENDS_SILENT_LOAD=True", "-e", "VFC_BACKENDS_LOGGER=False"];
-    // No log driver: the daemon would otherwise keep every result a lane writes, for as long as it runs.
-    if (native) {
-      const vars = Object.fromEntries(env.filter((_, i) => i % 2 === 1).map((pair) => pair.split(/=(.*)/s).slice(0, 2)));
-      return start([native, "--spawn"], { ...process.env, ...vars, LD_LIBRARY_PATH: join(process.env.VERIFICARLO_PREFIX!, "lib") });
-    }
+    const vars: Record<string, string> = { VFC_BACKENDS: `${backend} --seed=0`, B3_ORACLE_SQRT: rounding.sqrt === "random" ? "random:0" : "nearest", VFC_BACKENDS_SILENT_LOAD: "True", VFC_BACKENDS_LOGGER: "False" };
+    if (native) return start([native], { ...process.env, ...vars, LD_LIBRARY_PATH: join(process.env.VERIFICARLO_PREFIX!, "lib") });
     buildStepOracleMca(sha);
-    return start(["docker", "run", "--rm", "-i", "--network=none", "--log-driver=none", ...env, tag, "box3d-step-oracle", "--spawn"]);
+    // No log driver: the daemon would otherwise keep every result a lane writes, for as long as it runs.
+    return start(["docker", "run", "--rm", "-i", "--network=none", "--log-driver=none", ...Object.entries(vars).flatMap(([k, v]) => ["-e", `${k}=${v}`]), tag, "box3d-step-oracle"]);
   };
   const lanes = async () => (stochastic ??= await Promise.all(Array.from({ length: MCA_LANES }, () => startLane())));
   const send = (request: string, lane = main) =>
@@ -711,6 +712,8 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
       const asked = performance.now();
       const lines = await lane.until("end");
       const answered = performance.now();
+      const parts = lines.length > 0 && lines[lines.length - 1].startsWith("profile ") ? lines.pop()!.split(" ").slice(2).map(Number) : [];
+      parts.forEach((us, i) => (stepProfile[LANE_PARTS[i]] += us / 1000));
       const result = decodeResult(lines);
       stepProfile.requests++;
       stepProfile.laneWait += answered - asked;
@@ -718,7 +721,7 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
       return result;
     });
   const run = (s: StepState, lane = main) => send(encodeState(scene, s), lane);
-  const seeded = (seed: string, request: string) => `seeded ${seed} ${request.split("\n").length - 1}\n${request}`;
+  const seeded = (seed: string, request: string) => `seeded ${seed}\n${request}`;
   const seededRuns = async (state: StepState, purpose: string, count: number) => {
     const all = await lanes();
     const encoding = performance.now();

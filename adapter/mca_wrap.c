@@ -20,6 +20,7 @@
 float __real_sqrtf(float x);
 float __wrap_sqrtf(float x);
 int __wrap_clock_gettime(clockid_t clock, struct timespec* time);
+void b3OracleSeedSqrt(uint64_t seed);
 
 int __wrap_clock_gettime(clockid_t clock, struct timespec* time)
 {
@@ -68,4 +69,11 @@ float __wrap_sqrtf(float x)
 	float hi = (double)nearest < y ? nextafterf(nearest, INFINITY) : nearest;
 	double up = (y - (double)lo) / ((double)hi - (double)lo);
 	return (double)(next() >> 11) * 0x1p-53 < up ? hi : lo;
+}
+
+/** A seeded request's own stream, whatever the lane drew before (adapter/step.c's reseed). */
+void b3OracleSeedSqrt(uint64_t seed)
+{
+	if (mode < 0) configure();
+	state = seed;
 }
