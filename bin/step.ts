@@ -684,7 +684,8 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
   const startLane = () => {
     const backend = rounding.arithmetic === "random" ? MCA_BACKEND : "libinterflop_mca.so --mode=ieee";
     const env = ["-e", "VFC_BACKENDS=libinterflop_ieee.so", "-e", `B3_ORACLE_BACKEND=${backend}`, "-e", `B3_ORACLE_SQRT_MODE=${rounding.sqrt}`, "-e", "VFC_BACKENDS_SILENT_LOAD=True", "-e", "VFC_BACKENDS_LOGGER=False"];
-    return start(["docker", "run", "--rm", "-i", "--network=none", ...env, tag, "box3d-step-oracle", "--spawn"]);
+    // No log driver: the daemon would otherwise keep every result a lane writes, for as long as it runs.
+    return start(["docker", "run", "--rm", "-i", "--network=none", "--log-driver=none", ...env, tag, "box3d-step-oracle", "--spawn"]);
   };
   const lanes = async () => (stochastic ??= await Promise.all(Array.from({ length: MCA_LANES }, () => startLane())));
   const send = (request: string, lane = main) => lane.exchange(request, async () => decodeResult(await lane.until("end")));
