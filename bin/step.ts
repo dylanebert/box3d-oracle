@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { join } from "node:path";
-import { buildStepOracle, buildStepOracleMca, buildStepOracleVfc, oracleCacheDirectory } from "./oracle";
+import { buildStepOracle, buildStepOracleVfc, codeText, stepOracleBuildKey } from "./oracle";
 import { ANDERSON_DARLING_05, andersonDarling, chiSquareQuantile, normalQuantile, roundedNormal } from "./stats";
 
 export type Vec3 = [number, number, number];
@@ -622,6 +622,14 @@ export function resetStepProfile() {
   for (const key of Object.keys(stepProfile) as (keyof typeof stepProfile)[]) stepProfile[key] = 0;
 }
 
+/** What an oracle's results depend on beyond a request, on any host: the lanes' builds
+ * (stepOracleBuildKey), the rounding, the scene, and the bound and statistic code (this file and
+ * stats.ts, comments aside); no path, compiler version or host. Runs are seeded from it. */
+export function oracleIdentity(sha: string, scene: StepScene, rounding: Rounding): string {
+  const code = (name: string) => codeText(readFileSync(join(import.meta.dir, name), "utf8"));
+  return createHash("sha256").update([stepOracleBuildKey(sha), JSON.stringify(rounding), MCA_BACKEND, encodeScene(scene), code("step.ts"), code("stats.ts")].join("\n")).digest("hex");
+}
+
 /** Which of the randomly rounded lanes' arithmetic and sqrtf round randomly; a test may round either
  * to nearest. */
 export interface Rounding { arithmetic: "random" | "nearest"; sqrt: "random" | "nearest" }
@@ -634,13 +642,7 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
   const executable = buildStepOracle(sha);
   // Everything a spread depends on beyond the state and k: both builds, the rounding, the scene and
   // the code that bounds the runs.
-  // A native Verificarlo (VERIFICARLO_PREFIX) builds the lane executable; otherwise its Docker image.
-  const native = process.env.VERIFICARLO_PREFIX ? buildStepOracleVfc(sha) : undefined;
-  // The image is named before it is built, so a host that never draws a run never needs Docker.
-  const tag = native ?? buildStepOracleMca(sha, { build: false });
-  const identity = createHash("sha256")
-    .update([executable, tag, JSON.stringify(rounding), MCA_BACKEND, encodeScene(scene), readFileSync(join(import.meta.dir, "step.ts"), "utf8"), readFileSync(join(import.meta.dir, "stats.ts"), "utf8")].join("\n"))
-    .digest("hex");
+  const identity = oracleIdentity(sha, scene, rounding);
   const spreads = options.cache ?? "";
   const start = async (argv: string[], env?: Record<string, string | undefined>) => {
     const child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "inherit", env });
@@ -699,14 +701,14 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
   });
   // The randomly rounded lanes, started at the first spread.
   let stochastic: Awaited<ReturnType<typeof start>>[] | undefined;
-  // A lane is one long-lived process that reseeds itself per `seeded` request (adapter/step.c).
+  // A lane is one long-lived process of the Verificarlo build that reseeds itself per `seeded`
+  // request (adapter/step.c), built at the first lane, so a host that draws no run needs none.
   const startLane = () => {
+    const prefix = process.env.VERIFICARLO_PREFIX;
+    if (!prefix) throw new Error("randomly rounded runs need a native Verificarlo: VERIFICARLO_PREFIX names none");
     const backend = rounding.arithmetic === "random" ? MCA_BACKEND : "libinterflop_mca.so --mode=ieee";
     const vars: Record<string, string> = { VFC_BACKENDS: `${backend} --seed=0`, B3_ORACLE_SQRT: rounding.sqrt === "random" ? "random:0" : "nearest", VFC_BACKENDS_SILENT_LOAD: "True", VFC_BACKENDS_LOGGER: "False" };
-    if (native) return start([native], { ...process.env, ...vars, LD_LIBRARY_PATH: join(process.env.VERIFICARLO_PREFIX!, "lib") });
-    buildStepOracleMca(sha);
-    // No log driver: the daemon would otherwise keep every result a lane writes, for as long as it runs.
-    return start(["docker", "run", "--rm", "-i", "--network=none", "--log-driver=none", ...Object.entries(vars).flatMap(([k, v]) => ["-e", `${k}=${v}`]), tag, "box3d-step-oracle"]);
+    return start([buildStepOracleVfc(sha)], { ...process.env, ...vars, LD_LIBRARY_PATH: join(prefix, "lib") });
   };
   const lanes = async () => (stochastic ??= await Promise.all(Array.from({ length: laneCount }, () => startLane())));
   const send = (request: string, lane = main) =>

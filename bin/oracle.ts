@@ -487,56 +487,59 @@ function patchedStepSource(sha: string, cache: string): { official: string; patc
   return { official, patched };
 }
 
-/** Verificarlo's official image, pinned: v2.7.0, linux/arm64 and linux/amd64. */
-export const VERIFICARLO_IMAGE = "verificarlo/verificarlo@sha256:f024f8e3bba257305f96c1303b96889fc97374eab3321d7ed0bc4e59f95327fa";
-
-/** The step lane's upstream library compiled by Verificarlo, every float operation of Box3D's source a
- * call into the backend chosen at run time (VFC_BACKENDS), as a local Docker image's tag, built once
- * per SHA and adapter/hook digest. Verificarlo requires glibc and does not build on macOS, so the image
- * runs it in Linux. The flags are the release library's (-O3, NDEBUG, contraction off, scalar math);
- * vectorization is off, and the build fails if Verificarlo reports a vector width it leaves uninstrumented.
- * The adapter, which only moves bits and evaluates the hooks' bounds, is compiled without it. sqrtf,
- * the one libm call whose result the step rounds, is kept a call (-fno-builtin-sqrtf; the build fails
- * on any inlined square root) and wrapped at link time by adapter/mca_wrap.c, which also freezes clock_gettime so that
- * profiling arithmetic on wall time does not make seeded runs unrepeatable. */
-export function buildStepOracleMca(sha: string, options: { build?: boolean } = {}): string {
-  requireFullSha(sha);
-  const member = join(import.meta.dir, "..");
-  const box3d = ["-std=gnu17", "-O3", "-DNDEBUG", "-ffp-contract=off", "-fno-vectorize", "-fno-slp-vectorize", "-fno-builtin-sqrtf", "-fvisibility=hidden", "-DBOX3D_DISABLE_SIMD", "-DBOX3D_VALIDATE", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-I/src/box3d/include", "-I/src/box3d/src"];
-  const adapterFlags = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-DNDEBUG", "-I/src/box3d/include", "-I/src/box3d/src"];
-  const adapter = join(member, "adapter", "step.c");
-  const wrap = join(member, "adapter", "mca_wrap.c");
-  const dockerfile = [
-    `FROM ${VERIFICARLO_IMAGE}`,
-    "COPY box3d /src/box3d",
-    "COPY step.c mca_wrap.c /src/",
-    "WORKDIR /build",
-    `RUN set -e; for c in /src/box3d/src/*.c; do verificarlo-c ${box3d.join(" ")} -c "$c" -o "$(basename "$c" .c).o" 2>> vfc.log || { cat vfc.log; exit 1; }; done; if grep -i "vector size" vfc.log; then exit 1; fi; if objdump -d *.o | grep -Ew "fsqrt|sqrtss|sqrtsd"; then echo "a square root is inlined past the sqrtf wrapper"; exit 1; fi; clang ${adapterFlags.join(" ")} -c /src/step.c -o step.o; clang -O2 -std=gnu11 -Wall -Wextra -Werror -c /src/mca_wrap.c -o mca_wrap.o; verificarlo-c *.o -lm -Wl,--wrap=sqrtf,--wrap=clock_gettime -o /usr/local/bin/box3d-step-oracle; rm -rf /build`,
-    "",
-  ].join("\n");
-  const key = digest([sha, hookDigest(), readFileSync(adapter, "utf8"), readFileSync(wrap, "utf8"), dockerfile].join("\n")).slice(0, 16);
-  const tag = `box3d-step-oracle-mca:${sha.slice(0, 12)}-${key}`;
-  if (options.build === false || command("docker", ["image", "inspect", tag]).status === 0) return tag;
-  const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
-  const { official, patched } = patchedStepSource(sha, cache);
-  const context = join(cache, "step-builds", `${sha}-${key}-mca`);
-  rmSync(context, { recursive: true, force: true });
-  mkdirSync(context, { recursive: true });
-  checked("cp", ["-R", patched, join(context, "box3d")]);
-  rmSync(join(context, "box3d", ".git"), { recursive: true, force: true });
-  checked("cp", [adapter, join(context, "step.c")]);
-  checked("cp", [wrap, join(context, "mca_wrap.c")]);
-  writeFileSync(join(context, "Dockerfile"), dockerfile);
-  checked("docker", ["build", "--network=none", "-t", tag, context]);
-  verifyPristine(official, sha);
-  rmSync(context, { recursive: true, force: true });
-  return tag;
+/** Source text with its comments removed and its whitespace collapsed, strings kept: what a change to
+ * a C or TypeScript file's behavior changes and a comment-only change does not. */
+export function codeText(source: string): string {
+  let out = "";
+  for (let i = 0; i < source.length; ) {
+    const c = source[i];
+    if (c === "/" && source[i + 1] === "/") {
+      while (i < source.length && source[i] !== "\n") i++;
+    } else if (c === "/" && source[i + 1] === "*") {
+      const end = source.indexOf("*/", i + 2);
+      i = end < 0 ? source.length : end + 2;
+      out += " ";
+    } else if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1;
+      while (j < source.length && source[j] !== c) j += source[j] === "\\" ? 2 : 1;
+      out += source.slice(i, j + 1);
+      i = j + 1;
+    } else if (/\s/.test(c)) {
+      while (i < source.length && /\s/.test(source[i])) i++;
+      out += " ";
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out.replace(/ +/g, " ").trim();
 }
 
-/** The randomly rounded lane built by a native Verificarlo (VERIFICARLO_PREFIX, its install prefix,
- * whose lib/ holds the backends), as an executable under the cache; the same flags, wrappers and
- * checks as buildStepOracleMca's image. The adapter and wrappers are compiled by VFC_CLANG (default
- * the clang on PATH), which should be the LLVM Verificarlo was built with. */
+const VFC_BOX3D_FLAGS = ["-std=gnu17", "-O3", "-DNDEBUG", "-ffp-contract=off", "-fno-vectorize", "-fno-slp-vectorize", "-fno-builtin-sqrtf", "-fvisibility=hidden", "-DBOX3D_DISABLE_SIMD", "-DBOX3D_VALIDATE", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS"];
+const VFC_ADAPTER_FLAGS = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-DNDEBUG"];
+const NATIVE_CMAKE = ["-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "-DBOX3D_SAMPLES=OFF", "-DBOX3D_BENCHMARKS=OFF", "-DBOX3D_DOCS=OFF", "-DBOX3D_UNIT_TESTS=OFF", "-DBOX3D_VALIDATE=ON", "-DCMAKE_C_FLAGS=-DB3_ORACLE_HOOKS -DB3_ORACLE_STEP_HOOKS"];
+// NDEBUG as the Release library is built, whose asserts reference no b3InternalAssert.
+// Contraction off, as upstream builds its library: the adapter's bounds are float32 arithmetic.
+const NATIVE_CFLAGS = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-DNDEBUG"];
+
+/** What decides the step lanes' results, on any host: the official SHA, the hooks, the adapter's and
+ * wrappers' code (comments aside) and both builds' flags; no path, compiler version or host. */
+export function stepOracleBuildKey(sha: string): string {
+  requireFullSha(sha);
+  const adapter = (name: string) => codeText(readFileSync(join(import.meta.dir, "..", "adapter", name), "utf8"));
+  return digest([sha, hookDigest(), adapter("step.c"), adapter("mca_wrap.c"), ...NATIVE_CMAKE, ...NATIVE_CFLAGS, ...VFC_BOX3D_FLAGS, ...VFC_ADAPTER_FLAGS].join("\n"));
+}
+
+/** The randomly rounded lane: the patched checkout compiled by a native Verificarlo (VERIFICARLO_PREFIX,
+ * its install prefix, whose lib/ holds the backends; it requires glibc and does not build on macOS),
+ * every float operation of Box3D's source a call into the backend VFC_BACKENDS names, as an
+ * executable under the cache. The release library's flags (-O3, NDEBUG, contraction off, scalar
+ * math); vectorization off, and the build fails if Verificarlo reports a vector width it leaves
+ * uninstrumented; sqrtf, the one libm call whose result the step rounds, kept a call
+ * (-fno-builtin-sqrtf; the build fails on any inlined square root) and wrapped at link time by
+ * adapter/mca_wrap.c, which also freezes clock_gettime. The adapter and wrappers, which only move
+ * bits and evaluate the hooks' bounds, are compiled by VFC_CLANG (default the clang on PATH), the
+ * LLVM Verificarlo was built with. */
 export function buildStepOracleVfc(sha: string): string {
   requireFullSha(sha);
   const prefix = process.env.VERIFICARLO_PREFIX;
@@ -544,8 +547,8 @@ export function buildStepOracleVfc(sha: string): string {
   const member = join(import.meta.dir, "..");
   const vfc = join(prefix, "bin", "verificarlo-c");
   const clang = process.env.VFC_CLANG ?? "clang";
-  const box3d = ["-std=gnu17", "-O3", "-DNDEBUG", "-ffp-contract=off", "-fno-vectorize", "-fno-slp-vectorize", "-fno-builtin-sqrtf", "-fvisibility=hidden", "-DBOX3D_DISABLE_SIMD", "-DBOX3D_VALIDATE", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS"];
-  const adapterFlags = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-DNDEBUG"];
+  const box3d = VFC_BOX3D_FLAGS;
+  const adapterFlags = VFC_ADAPTER_FLAGS;
   const adapter = join(member, "adapter", "step.c");
   const wrap = join(member, "adapter", "mca_wrap.c");
   const versions = [checked(vfc, ["--version"]).stdout.trim(), checked(clang, ["--version"]).stdout.split("\n")[0]];
@@ -579,10 +582,8 @@ export function buildStepOracleVfc(sha: string): string {
 export function buildStepOracle(sha: string): string {
   requireFullSha(sha);
   const member = join(import.meta.dir, "..");
-  const cmake = ["-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "-DBOX3D_SAMPLES=OFF", "-DBOX3D_BENCHMARKS=OFF", "-DBOX3D_DOCS=OFF", "-DBOX3D_UNIT_TESTS=OFF", "-DBOX3D_VALIDATE=ON", "-DCMAKE_C_FLAGS=-DB3_ORACLE_HOOKS -DB3_ORACLE_STEP_HOOKS"];
-  // NDEBUG as the Release library is built, whose asserts reference no b3InternalAssert.
-  // Contraction off, as upstream builds its library: the adapter's bounds are float32 arithmetic.
-  const cflags = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-DNDEBUG"];
+  const cmake = NATIVE_CMAKE;
+  const cflags = NATIVE_CFLAGS;
   const adapter = join(member, "adapter", "step.c");
   const key = digest([sha, hookDigest(), readFileSync(adapter, "utf8"), ...cmake, ...cflags].join("\n")).slice(0, 16);
   const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));

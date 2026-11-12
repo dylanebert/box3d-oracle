@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { andersonDarling, ANDERSON_DARLING_05, chiSquareQuantile, normalQuantile, roundedNormal } from "../bin/stats";
-import { bound, CONTACT_LANES, continuousValues, deviationInflation, spreadKey, entityOf, familyQuantile, MCA_RUNS, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, quantities, rotationAngle, sohierBound, tolerance, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
+import { codeText } from "../bin/oracle";
+import { bound, CONTACT_LANES, continuousValues, deviationInflation, spreadKey, entityOf, familyQuantile, MCA_RUNS, nextState, occurrenceKey, oracleIdentity, OVERFLOW_COLOR, openStepOracle, quantities, rotationAngle, sohierBound, tolerance, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
 
 // The pinned official Box3D the step lane is held at; building it fetches official main once into the cache.
 const SHA = "336263320469e5e9febfe18697ab562488f7e97a";
@@ -45,6 +46,10 @@ const scene: StepScene = {
     { kind: "filter", bodyA: 1, bodyB: 4 },
   ],
 };
+
+// Tests that draw randomly rounded runs need a native Verificarlo build (VERIFICARLO_PREFIX, on a lane
+// host such as dylan-sandbox), and are skipped without one, by name.
+const stochastic = test.skipIf(process.env.VERIFICARLO_PREFIX === undefined);
 
 let oracle: StepOracle;
 let native: StepResult[];
@@ -269,6 +274,21 @@ test("an injection before a relax loads bodies and contact lanes; its own state 
   expect(pushed.contacts[contact.id]).not.toEqual(after.contacts[contact.id]);
 }, 60_000);
 
+test("an oracle's identity ignores comments and layout, not code", () => {
+  const files = ["bin/step.ts", "bin/stats.ts", "adapter/step.c", "adapter/mca_wrap.c"].map((f) => readFileSync(join(import.meta.dir, "..", f), "utf8"));
+  for (const source of files) {
+    // Remarks before each top-level declaration, where no comment or string is open.
+    const commented = source.replace(/\n(export |static |function |typedef )/g, "\n// a remark\n/* and\n   a block */\n\n$1");
+    expect(commented).not.toBe(source);
+    expect(codeText(commented)).toBe(codeText(source));
+    expect(codeText(`${source}\n// a last line`)).toBe(codeText(source));
+    expect(codeText(`${source}\nconst extra = 1;`)).not.toBe(codeText(source));
+  }
+  expect(oracleIdentity(SHA, scene, { arithmetic: "random", sqrt: "random" })).toBe(oracle.identity);
+  expect(oracleIdentity(SHA, scene, { arithmetic: "nearest", sqrt: "random" })).not.toBe(oracle.identity);
+  expect(oracleIdentity(SHA, { ...scene, world: { ...scene.world, subStepCount: 8 } }, { arithmetic: "random", sqrt: "random" })).not.toBe(oracle.identity);
+});
+
 test("the run count, inflation and quantiles are the paper's at the fixed constants", () => {
   // Sohier et al., Table 3: probability 0.99 at confidence 0.95 needs 299 runs, the fallback's count.
   expect(MCA_RUNS).toBe(299);
@@ -319,7 +339,7 @@ test("a quantized sample is a rounded normal when its lattice fit holds, and fal
   expect(bound(spread.map((z) => [z]), spread).model).toBe("range");
 });
 
-test("Verificarlo's build of upstream rounding to nearest is the native lane bit for bit", async () => {
+stochastic("Verificarlo's build of upstream rounding to nearest is the native lane bit for bit", async () => {
   const nearest = await openStepOracle(SHA, scene, { arithmetic: "nearest", sqrt: "nearest" });
   try {
     for (const k of [20, 120, 200]) {
@@ -333,7 +353,7 @@ test("Verificarlo's build of upstream rounding to nearest is the native lane bit
   }
 }, 120_000);
 
-test("a run depends on its request alone: another oracle, after other requests, draws the same runs", async () => {
+stochastic("a run depends on its request alone: another oracle, after other requests, draws the same runs", async () => {
   const again = await openStepOracle(SHA, scene);
   try {
     const state = nextState(native[120]);
@@ -346,7 +366,7 @@ test("a run depends on its request alone: another oracle, after other requests, 
   }
 }, 120_000);
 
-test("sqrtf rounds randomly by distance, and upstream's own calls go through it", async () => {
+stochastic("sqrtf rounds randomly by distance, and upstream's own calls go through it", async () => {
   // sqrt(2) lies 0.20 of the way from its float below to its float above.
   const { nearest, runs } = await oracle.sqrtf(2);
   expect(nearest).toBe(Math.fround(Math.SQRT2));
@@ -367,7 +387,7 @@ test("sqrtf rounds randomly by distance, and upstream's own calls go through it"
   }
 }, 120_000);
 
-test("the CNH tolerance holds a fresh independent set of runs at its stated rate", async () => {
+stochastic("the CNH tolerance holds a fresh independent set of runs at its stated rate", async () => {
   const state = nextState(native[120]);
   const { result, kept, runsKept } = await oracle.stepWithSpread(state, familyQuantile(1));
   expect(result).toEqual(native[121]);
@@ -395,7 +415,7 @@ test("the CNH tolerance holds a fresh independent set of runs at its stated rate
   console.log(JSON.stringify({ models, rejected, individual: exceed(familyQuantile(1)) / pairs, lattice: latticeExceed(familyQuantile(1)) / (lattice.length * fresh.length) }));
 }, 60_000);
 
-test("independent runs are none of the bounds' runs and repeat", async () => {
+stochastic("independent runs are none of the bounds' runs and repeat", async () => {
   const state = nextState(native[120]);
   const runs = (await oracle.randomlyRounded(state)).map((r) => JSON.stringify(r.bodies));
   const independent = await oracle.independentRuns(state, 24);
@@ -410,7 +430,7 @@ test("independent runs are none of the bounds' runs and repeat", async () => {
   }
 }, 60_000);
 
-test("cold, warm and partly warm caches give bit-equal spreads", async () => {
+stochastic("cold, warm and partly warm caches give bit-equal spreads", async () => {
   const states = [100, 130, 160].map((k) => nextState(native[k]));
   const cold = mkdtempSync(join(tmpdir(), "spreads-"));
   const partial = mkdtempSync(join(tmpdir(), "spreads-"));
@@ -448,7 +468,7 @@ test("cold, warm and partly warm caches give bit-equal spreads", async () => {
   }
 }, 300_000);
 
-test("a vector's bound is its components' and a rotation's is an angle", async () => {
+stochastic("a vector's bound is its components' and a rotation's is an angle", async () => {
   const state = nextState(native[120]);
   const { result, kept } = await oracle.stepWithSpread(state, familyQuantile(1));
   const groups = quantities(scene, result);
@@ -473,7 +493,7 @@ test("a vector's bound is its components' and a rotation's is an angle", async (
 // Sentinel: every hooked decision reports its closest approach, a decision is unstable when its
 // margin's tolerance over the randomly rounded runs (or its local bound) reaches its threshold, and a
 // flip with that window changes upstream's step.
-test("decisions unstable by their spread are reported and flip within their window", async () => {
+stochastic("decisions unstable by their spread are reported and flip within their window", async () => {
   let checked = 0;
   for (let k = 1; k < STEPS && checked < 3; k++) {
     const state = nextState(native[k - 1]);

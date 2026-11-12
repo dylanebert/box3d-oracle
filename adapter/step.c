@@ -2,6 +2,7 @@
 // writes the state after it. Protocol: whitespace tokens on stdin and stdout, floats as eight
 // hexadecimal digits of their bits, "-" for an upstream default. See bin/step.ts.
 #define _GNU_SOURCE
+#define _DARWIN_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include <float.h>
 #include <math.h>
@@ -1219,7 +1220,9 @@ typedef void PushSeed(uint64_t seed);
 typedef void PopSeed(void);
 static PopSeed* popSeed;
 static int* globalTid;
-void b3OracleSeedSqrt(uint64_t seed) __attribute__((weak));
+// The Verificarlo build's mca_wrap.c defines it; elsewhere this weak one, which does nothing.
+void b3OracleSeedSqrt(uint64_t seed);
+__attribute__((weak)) void b3OracleSeedSqrt(uint64_t seed) { (void)seed; }
 
 static void saveStream(void)
 {
@@ -1238,7 +1241,7 @@ static void reseed(void)
 	if (popSeed == NULL) fail("seeded request on a lane without the MCA backend");
 	popSeed();
 	*globalTid = (int)(seed % 2147483646ULL);
-	if (b3OracleSeedSqrt) b3OracleSeedSqrt(seed);
+	b3OracleSeedSqrt(seed);
 }
 
 int main(int argc, char** argv)
