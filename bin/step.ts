@@ -668,14 +668,14 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
     child.stdin.write(encodeScene(scene));
     child.stdin.flush();
     const ready = await until("ready");
-    let queue: Promise<unknown> = Promise.resolve();
+    // Pipelined: a request is written at once, so a lane never waits on its client to read its last
+    // answer before it can start the next; answers are read in request order.
+    let reads: Promise<unknown> = Promise.resolve();
     const exchange = <T>(request: string, read: () => Promise<T>): Promise<T> => {
-      const run = queue.then(async () => {
-        child.stdin.write(request);
-        child.stdin.flush();
-        return read();
-      });
-      queue = run.catch(() => undefined);
+      child.stdin.write(request);
+      child.stdin.flush();
+      const run = reads.then(read);
+      reads = run.catch(() => undefined);
       return run;
     };
     // A lane's driver exits at the end of its input, writing its profile if asked; a moment later it is
