@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+import { oracleCacheDirectory } from "../bin/oracle";
 import { andersonDarling, ANDERSON_DARLING_05, chiSquareQuantile, normalQuantile, roundedNormal } from "../bin/stats";
-import { bound, CONTACT_LANES, continuousValues, deviationInflation, entityOf, familyQuantile, MCA_RUNS, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, quantities, rotationAngle, sohierBound, tolerance, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
+import { bound, CONTACT_LANES, continuousValues, deviationInflation, spreadKey, entityOf, familyQuantile, MCA_RUNS, nextState, occurrenceKey, OVERFLOW_COLOR, openStepOracle, quantities, rotationAngle, sohierBound, tolerance, unstableDecisions, type StepOracle, type StepResult, type StepScene, type StepState } from "../bin/step";
 
 // The pinned official Box3D the step lane is held at; building it fetches official main once into the cache.
 const SHA = "336263320469e5e9febfe18697ab562488f7e97a";
@@ -403,6 +406,41 @@ test("independent runs are drawn outside the bounds' runs and repeats", async ()
     again.close();
   }
 }, 60_000);
+
+test("a cached spread is the spread: keyed by builds, scene, code, k and the exact state", async () => {
+  // The runs a spread draws depend on its lanes' earlier requests, so both oracles start fresh.
+  const state = nextState(native[130]);
+  const uncached = await openStepOracle(SHA, scene);
+  const fresh = await uncached.stepWithSpread(state, 4.25);
+  uncached.close();
+  const cached = await openStepOracle(SHA, scene, undefined, { cache: true });
+  try {
+    expect(cached.identity).toBe(oracle.identity);
+    const first = await cached.stepWithSpread(state, 4.25);
+    const started = performance.now();
+    const again = await cached.stepWithSpread(state, 4.25);
+    const read = performance.now() - started;
+    for (const s of [first, again]) {
+      expect(s.result).toEqual(fresh.result);
+      expect(s.kept).toEqual(fresh.kept);
+      expect(s.all()).toEqual(fresh.all());
+      expect(s.unstable).toEqual(fresh.unstable);
+    }
+    expect(read).toBeLessThan(50);
+    // A state one bit away is another key.
+    const moving = state.bodies.findIndex((b) => b.linearVelocity[1] !== 0);
+    const moved = { ...state, bodies: state.bodies.map((b, i) => (i === moving ? { ...b, linearVelocity: [b.linearVelocity[0], Math.fround(b.linearVelocity[1] * (1 + 2 ** -23)), b.linearVelocity[2]] as typeof b.linearVelocity } : b)) };
+    expect(moved.bodies[moving].linearVelocity[1]).not.toBe(state.bodies[moving].linearVelocity[1]);
+    const keys = [spreadKey(cached.identity, 4.25, scene, state), spreadKey(cached.identity, 4.25, scene, moved), spreadKey(cached.identity, 4.5, scene, state)];
+    expect(new Set(keys).size).toBe(3);
+    await cached.stepWithSpread(moved, 4.25);
+    await cached.stepWithSpread(state, 4.5);
+    const files = new Set(readdirSync(join(oracleCacheDirectory(), "spreads")));
+    for (const key of keys) expect(files.has(`${key}.json`)).toBe(true);
+  } finally {
+    cached.close();
+  }
+}, 120_000);
 
 test("a vector's bound is its components' and a rotation's is an angle", async () => {
   const state = nextState(native[120]);

@@ -468,6 +468,11 @@ function buildScenario(patched: string, build: string, table: string): { executa
   return { executable, hookDigest: hookDigest(), cmake: cmake.map((value) => value === patched ? "<patched-official-source>" : value === build ? "<scenario-build>" : value) };
 }
 
+/** The oracle's cache: official clones, builds and, for callers, results keyed by exact input. */
+export function oracleCacheDirectory(): string {
+  return resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
+}
+
 /** The official checkout at `sha` and its disposable copy with every step-lane hook applied. */
 function patchedStepSource(sha: string, cache: string): { official: string; patched: string } {
   const remote = join(cache, "official.git");

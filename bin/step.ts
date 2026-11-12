@@ -1,6 +1,9 @@
 // Client for the step lane (adapter/step.c): a scene once, then one b3World_Step per request from a
 // complete loaded state. Numbers cross as float32 bits; an omitted optional field is upstream's default.
-import { buildStepOracle, buildStepOracleMca } from "./oracle";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { buildStepOracle, buildStepOracleMca, oracleCacheDirectory } from "./oracle";
 import { ANDERSON_DARLING_05, andersonDarling, chiSquareQuantile, normalQuantile, roundedNormal } from "./stats";
 
 export type Vec3 = [number, number, number];
@@ -336,7 +339,10 @@ export function nextState(result: StepResult, applied: { force?: Vec3; torque?: 
  * Anderson-Darling nor the lattice fit not rejecting certifies the tails k reaches into; the lattice
  * step is the smallest gap between a quantity's distinct values, which assumes an even lattice. What the claim cannot guarantee, a
  * null run measures: shallot-gpu-physics holds independentRuns' results, upstream's rounding alone,
- * through each schedule in the port's place, and calibrates an ensemble consistency test on them. */
+ * through each schedule in the port's place, and calibrates an ensemble consistency test on them: two
+ * statistics over a schedule, the count of quantities out of bound and the largest error-to-tolerance
+ * ratio, each failing a scene above the largest of 598 null runs' values, at most 0.5% exceedance at
+ * confidence 0.95, so at most 1% overall by the union bound. */
 export const MCA_CONFIDENCE = 0.95;
 export const FAMILY_ALPHA = 0.05;
 /** 299 = ceil(ln 0.05 / ln 0.99): Table 3's count for the fallback at probability 0.99, and a row of
@@ -566,6 +572,8 @@ export interface StepOracle {
   stepWithSpread(state: StepState, k: number): Promise<Spread>;
   /** Upstream's step from the state MCA_RUNS times under random rounding, in run order. */
   randomlyRounded(state: StepState): Promise<StepResult[]>;
+  /** Everything this oracle's results depend on beyond a request: its builds, rounding, scene and code. */
+  identity: string;
   /** `count` randomly rounded steps from lanes seeded outside the bounds' range (INDEPENDENT_SEED and
    * on), which no bound saw, run r on lane r mod MCA_LANES: stand-ins for a port whose only difference
    * is rounding, one per null run. */
@@ -582,14 +590,37 @@ export interface StepOracle {
   close(): void;
 }
 
+/** A cached spread's key: the oracle's identity, k and the exact state's encoding. */
+export const spreadKey = (identity: string, k: number, scene: StepScene, state: StepState) => createHash("sha256").update(`${identity}\n${k}\n${encodeState(scene, state)}`).digest("hex");
+
+/** A spread as JSON, `all` computed; undefined if a number JSON cannot carry occurs. */
+function serializeSpread(spread: Spread): string | undefined {
+  const bounds = (b: Bounds) => ({ values: [...b.values], vectors: [...b.vectors] });
+  // JSON carries neither -0, which a result's bits may hold, nor a non-finite number.
+  const text = JSON.stringify({ ...spread, kept: bounds(spread.kept), all: bounds(spread.all()) }, (_, v) => (typeof v !== "number" ? v : Object.is(v, -0) ? "-0" : Number.isFinite(v) ? v : "nonfinite"));
+  return text.includes('"nonfinite"') ? undefined : text;
+}
+function parseSpread(text: string): Spread {
+  const raw = JSON.parse(text, (_, v) => (v === "-0" ? -0 : v));
+  const bounds = (b: { values: [string, Bound][]; vectors: [string, Bound][] }): Bounds => ({ values: new Map(b.values), vectors: new Map(b.vectors) });
+  const all = bounds(raw.all);
+  return { ...raw, kept: bounds(raw.kept), all: () => all };
+}
+
 /** Which of the randomly rounded lanes' arithmetic and sqrtf round randomly; a test may round either
  * to nearest. */
 export interface Rounding { arithmetic: "random" | "nearest"; sqrt: "random" | "nearest" }
 
 /** Builds (once, cached) and starts the step lane for an official Box3D SHA with one scene. The
  * round-to-nearest step runs here; the randomly rounded runs run Verificarlo's build in Docker. */
-export async function openStepOracle(sha: string, scene: StepScene, rounding: Rounding = { arithmetic: "random", sqrt: "random" }): Promise<StepOracle> {
+export async function openStepOracle(sha: string, scene: StepScene, rounding: Rounding = { arithmetic: "random", sqrt: "random" }, options: { cache?: boolean } = {}): Promise<StepOracle> {
   const executable = buildStepOracle(sha);
+  // Everything a spread depends on beyond the state and k: both builds, the rounding, the scene and
+  // the code that bounds the runs.
+  const identity = createHash("sha256")
+    .update([executable, buildStepOracleMca(sha), JSON.stringify(rounding), MCA_BACKEND, encodeScene(scene), readFileSync(join(import.meta.dir, "step.ts"), "utf8"), readFileSync(join(import.meta.dir, "stats.ts"), "utf8")].join("\n"))
+    .digest("hex");
+  const spreads = join(oracleCacheDirectory(), "spreads");
   const start = async (argv: string[]) => {
     const child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
     const reader = child.stdout.getReader();
@@ -660,6 +691,31 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
     const request = encodeState(scene, state);
     return Promise.all(Array.from({ length: MCA_RUNS }, (_, r) => send(request, all[r % MCA_LANES])));
   };
+  const spreadOf = async (state: StepState, k: number): Promise<Spread> => {
+    const [result, others] = await Promise.all([run(state), randomlyRounded(state)]);
+    const base = continuousValues(result);
+    const groups = quantities(scene, result);
+    const kept = others.filter((other) => discrete(other) === discrete(result));
+    const bounds = (set: StepResult[]): Bounds => {
+      const values = new Map<string, Bound>();
+      const vectors = new Map<string, Bound>();
+      const runs = set.map(continuousValues);
+      for (const [key, b] of base) {
+        const z = runs.map((v) => v.get(key)).filter((x) => x !== undefined).map((x) => [x! - b]);
+        values.set(key, bound(z.length === set.length ? z : [], z.map((x) => Math.abs(x[0]))));
+      }
+      for (const g of groups) {
+        const b = g.members.map((m) => base.get(m)!);
+        const xs = runs.map((v) => g.members.map((m) => v.get(m))).filter((x) => x.every((y) => y !== undefined)) as number[][];
+        const changes = xs.map((x) => (g.rotation ? rotationVector(x, b) : x.map((y, c) => y - b[c])));
+        const largest = xs.map((x, i) => (g.rotation ? rotationAngle(x, b) : Math.hypot(...changes[i])));
+        vectors.set(g.key, bound(xs.length === set.length ? changes : [], largest));
+      }
+      return { values, vectors };
+    };
+    const { unstable, unmatched } = unstableDecisions(result.decisions, others.map((o) => o.decisions), k);
+    return { result, kept: bounds(kept), all: () => bounds(others), runsKept: kept.length, discreteChanges: others.length - kept.length, unstable, unmatched };
+};
   return {
     mass,
     initial,
@@ -677,30 +733,19 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
       return { nearest, runs };
     },
     async stepWithSpread(state, k) {
-      const [result, others] = await Promise.all([run(state), randomlyRounded(state)]);
-      const base = continuousValues(result);
-      const groups = quantities(scene, result);
-      const kept = others.filter((other) => discrete(other) === discrete(result));
-      const bounds = (set: StepResult[]): Bounds => {
-        const values = new Map<string, Bound>();
-        const vectors = new Map<string, Bound>();
-        const runs = set.map(continuousValues);
-        for (const [key, b] of base) {
-          const z = runs.map((v) => v.get(key)).filter((x) => x !== undefined).map((x) => [x! - b]);
-          values.set(key, bound(z.length === set.length ? z : [], z.map((x) => Math.abs(x[0]))));
-        }
-        for (const g of groups) {
-          const b = g.members.map((m) => base.get(m)!);
-          const xs = runs.map((v) => g.members.map((m) => v.get(m))).filter((x) => x.every((y) => y !== undefined)) as number[][];
-          const changes = xs.map((x) => (g.rotation ? rotationVector(x, b) : x.map((y, c) => y - b[c])));
-          const largest = xs.map((x, i) => (g.rotation ? rotationAngle(x, b) : Math.hypot(...changes[i])));
-          vectors.set(g.key, bound(xs.length === set.length ? changes : [], largest));
-        }
-        return { values, vectors };
-      };
-      const { unstable, unmatched } = unstableDecisions(result.decisions, others.map((o) => o.decisions), k);
-      return { result, kept: bounds(kept), all: () => bounds(others), runsKept: kept.length, discreteChanges: others.length - kept.length, unstable, unmatched };
+      if (!options.cache) return spreadOf(state, k);
+      const path = join(spreads, `${spreadKey(identity, k, scene, state)}.json`);
+      if (existsSync(path)) return parseSpread(readFileSync(path, "utf8"));
+      const spread = await spreadOf(state, k);
+      const text = serializeSpread(spread);
+      if (text !== undefined) {
+        mkdirSync(spreads, { recursive: true });
+        writeFileSync(`${path}.tmp`, text);
+        renameSync(`${path}.tmp`, path);
+      }
+      return spread;
     },
+    identity,
     decide: (kind, operands, flip = false) =>
       exchange(`decide ${kind} ${kind === "separation" || kind === "rolling" ? vec(operands) : `${operands[0]} ${vec(operands.slice(1))}`} ${flip ? 1 : 0}\n`, async () => {
         const lines = await until("end");
