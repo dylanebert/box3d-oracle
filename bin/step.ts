@@ -581,8 +581,9 @@ export interface StepOracle {
   /** Everything this oracle's results depend on beyond a request: its builds, rounding, scene and code. */
   identity: string;
   /** `count` randomly rounded steps seeded apart from the bounds' runs (runSeed's `null` purpose), which
-   * no bound saw: stand-ins for a port whose only difference is rounding, one per null run. */
-  independentRuns(state: StepState, count: number): Promise<StepResult[]>;
+   * no bound saw: stand-ins for a port whose only difference is rounding, one per null run. Another
+   * `purpose` draws another independent ensemble. */
+  independentRuns(state: StepState, count: number, purpose?: string): Promise<StepResult[]>;
   /** sqrtf(x) as the step calls it: here, and on each randomly rounded lane in turn, MCA_RUNS times. */
   sqrtf(x: number): Promise<{ nearest: number; runs: number[] }>;
   /** The scene stepped without reloading, each step's result: what a complete load must reproduce. */
@@ -767,7 +768,7 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
     initial,
     step: (state) => run(state),
     randomlyRounded,
-    independentRuns: (state, count) => seededRuns(state, "null", count),
+    independentRuns: (state, count, purpose = "null") => seededRuns(state, purpose, count),
     async sqrtf(x) {
       const request = `sqrtf ${f(x)}\n`;
       const ask = (lane: typeof main, text: string) => lane.exchange(text, async () => unf((await lane.until("end"))[0].split(" ")[1]));
