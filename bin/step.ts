@@ -627,8 +627,10 @@ export function resetStepProfile() {
 export interface Rounding { arithmetic: "random" | "nearest"; sqrt: "random" | "nearest" }
 
 /** Builds (once, cached) and starts the step lane for an official Box3D SHA with one scene. The
- * round-to-nearest step runs here; the randomly rounded runs run Verificarlo's build in Docker. */
-export async function openStepOracle(sha: string, scene: StepScene, rounding: Rounding = { arithmetic: "random", sqrt: "random" }, options: { cache?: string } = {}): Promise<StepOracle> {
+ * round-to-nearest step runs here; the randomly rounded runs run Verificarlo's build in `lanes`
+ * long-lived processes (MCA_LANES unless given; 0 for an oracle that draws none). */
+export async function openStepOracle(sha: string, scene: StepScene, rounding: Rounding = { arithmetic: "random", sqrt: "random" }, options: { cache?: string; lanes?: number } = {}): Promise<StepOracle> {
+  const laneCount = options.lanes ?? MCA_LANES;
   const executable = buildStepOracle(sha);
   // Everything a spread depends on beyond the state and k: both builds, the rounding, the scene and
   // the code that bounds the runs.
@@ -706,7 +708,7 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
     // No log driver: the daemon would otherwise keep every result a lane writes, for as long as it runs.
     return start(["docker", "run", "--rm", "-i", "--network=none", "--log-driver=none", ...Object.entries(vars).flatMap(([k, v]) => ["-e", `${k}=${v}`]), tag, "box3d-step-oracle"]);
   };
-  const lanes = async () => (stochastic ??= await Promise.all(Array.from({ length: MCA_LANES }, () => startLane())));
+  const lanes = async () => (stochastic ??= await Promise.all(Array.from({ length: laneCount }, () => startLane())));
   const send = (request: string, lane = main) =>
     lane.exchange(request, async () => {
       const asked = performance.now();
@@ -727,7 +729,7 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
     const encoding = performance.now();
     const request = encodeState(scene, state);
     stepProfile.encode += performance.now() - encoding;
-    return Promise.all(Array.from({ length: count }, (_, r) => send(seeded(runSeed(identity, request, purpose, r), request), all[r % MCA_LANES])));
+    return Promise.all(Array.from({ length: count }, (_, r) => send(seeded(runSeed(identity, request, purpose, r), request), all[r % laneCount])));
   };
   const randomlyRounded = (state: StepState) => seededRuns(state, "bound", MCA_RUNS);
   const spreadOf = async (state: StepState, k: number): Promise<Spread> => {
@@ -768,7 +770,7 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
       const request = `sqrtf ${f(x)}\n`;
       const ask = (lane: typeof main, text: string) => lane.exchange(text, async () => unf((await lane.until("end"))[0].split(" ")[1]));
       const all = await lanes();
-      const [nearest, ...runs] = await Promise.all([ask(main, request), ...Array.from({ length: MCA_RUNS }, (_, r) => ask(all[r % MCA_LANES], seeded(runSeed(identity, request, "sqrtf", r), request)))]);
+      const [nearest, ...runs] = await Promise.all([ask(main, request), ...Array.from({ length: MCA_RUNS }, (_, r) => ask(all[r % laneCount], seeded(runSeed(identity, request, "sqrtf", r), request)))]);
       return { nearest, runs };
     },
     async stepWithSpread(state, k) {
