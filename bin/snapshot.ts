@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const hash = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex");
 const stamp = (path: string) => {
   const s = statSync(path, { bigint: true });
-  return `${realpathSync(path)}:${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}`;
+  return `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}`;
 };
 
 /** Content is read once, with a before/after check. Later checks also catch replacement and symlink retargeting. */
