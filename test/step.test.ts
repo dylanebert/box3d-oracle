@@ -395,7 +395,10 @@ stochastic("the CNH tolerance holds a fresh independent set of runs at its state
   // A static body's state is not computed, so no run changes it.
   expect(kept.values.get("bodies.0.center.1")!.range).toBe(0);
   const base = continuousValues(result);
-  const fresh = (await oracle.randomlyRounded(state)).map(continuousValues);
+  const fitted = new Set((await oracle.randomlyRounded(state)).map((r) => JSON.stringify(r.bodies)));
+  const freshRuns = await oracle.independentRuns(state, MCA_RUNS, "tolerance-validation");
+  for (const run of freshRuns) expect(fitted.has(JSON.stringify(run.bodies))).toBe(false);
+  const fresh = freshRuns.map(continuousValues);
   expect(new Set(fresh.map((v) => JSON.stringify([...v.values()]))).size).toBe(MCA_RUNS);
   const normal = [...kept.values].filter(([, b]) => b.model === "normal");
   const rejected = [...kept.values].filter(([, b]) => b.model === "lattice" || b.model === "range").length;
