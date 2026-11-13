@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
+import { Snapshot } from "./snapshot";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -522,12 +523,63 @@ const NATIVE_CMAKE = ["-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "
 // Contraction off, as upstream builds its library: the adapter's bounds are float32 arithmetic.
 const NATIVE_CFLAGS = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-DNDEBUG"];
 
-/** What decides the step lanes' results, on any host: the official SHA, the hooks, the adapter's and
- * wrappers' code (comments aside) and both builds' flags; no path, compiler version or host. */
+const implementation = new Snapshot();
+const sourceNames = ["bin/oracle.ts", "bin/step.ts", "bin/stats.ts", "bin/snapshot.ts", "hooks/patches.ts", "hooks/oracle_hooks.h", "adapter/step.c", "adapter/mca_wrap.c"];
+const sourceHashes = sourceNames.map((name) => implementation.file(join(import.meta.dir, "..", name), codeText));
+export const stepSourceIdentity = digest(sourceHashes.join("\n"));
+export const assertStepImplementation = () => {
+  implementation.assert();
+  for (const [name, value] of environment) if (process.env[name] !== value) throw new OracleError(`oracle implementation changed: ${name}; restart the process`);
+};
+const toolchains = new Map<string, string>();
+const environment = new Map<string, string | undefined>();
+function frozenEnv(name: string): string | undefined {
+  const value = process.env[name];
+  if (environment.has(name) && environment.get(name) !== value) throw new OracleError(`oracle implementation changed: ${name}; restart the process`);
+  environment.set(name, value);
+  return value;
+}
+export function stepToolchainIdentity(vfc: boolean): string {
+  assertStepImplementation();
+  const cc = frozenEnv("CC") ?? "cc";
+  const prefix = frozenEnv("VERIFICARLO_PREFIX");
+  const clang = frozenEnv("VFC_CLANG") ?? "clang";
+  const programs = vfc ? [cc, clang, join(prefix ?? "", "bin", "verificarlo-c")] : [cc];
+  if (vfc && !prefix) throw new OracleError("VERIFICARLO_PREFIX names no Verificarlo install");
+  const key = vfc ? "vfc" : "native";
+  let identity = toolchains.get(key);
+  if (!identity) {
+    const contents = programs.map((program) => {
+      const path = Bun.which(program);
+      if (!path) throw new OracleError(`compiler not found: ${program}`);
+      const files = [path];
+      // Apple's /usr/bin compiler is a developer-tool shim; bind its selected compiler too.
+      if (process.platform === "darwin" && path.startsWith("/usr/bin/")) {
+        files.push(checked("xcrun", ["--find", basename(path)]).stdout.trim());
+      }
+      if (process.platform === "linux") {
+        const linked = command("ldd", [path]);
+        for (const match of linked.stdout.matchAll(/(?:=>\s+|^\s*)(\/[^\s]+)\s+\(/gm)) files.push(match[1]);
+      }
+      return digest(files.map((file) => implementation.file(file)).join("\n"));
+    });
+    if (vfc) contents.push(implementation.tree(join(prefix!, "bin")), implementation.tree(join(prefix!, "lib")));
+    identity = digest(contents.join("\n"));
+    toolchains.set(key, identity);
+  }
+  assertStepImplementation();
+  return identity;
+}
+export function stepExecutableIdentity(path: string): string {
+  assertStepImplementation();
+  return implementation.file(path);
+}
+
+/** Source behavior and build flags. Executed file contents and toolchains are bound separately. */
 export function stepOracleBuildKey(sha: string): string {
   requireFullSha(sha);
-  const adapter = (name: string) => codeText(readFileSync(join(import.meta.dir, "..", "adapter", name), "utf8"));
-  return digest([sha, hookDigest(), adapter("step.c"), adapter("mca_wrap.c"), ...NATIVE_CMAKE, ...NATIVE_CFLAGS, ...VFC_BOX3D_FLAGS, ...VFC_ADAPTER_FLAGS].join("\n"));
+  assertStepImplementation();
+  return digest([sha, ...sourceHashes.slice(4), ...NATIVE_CMAKE, ...NATIVE_CFLAGS, ...VFC_BOX3D_FLAGS, ...VFC_ADAPTER_FLAGS].join("\n"));
 }
 
 /** The randomly rounded lane: the patched checkout compiled by a native Verificarlo (VERIFICARLO_PREFIX,
@@ -551,11 +603,10 @@ export function buildStepOracleVfc(sha: string): string {
   const adapterFlags = VFC_ADAPTER_FLAGS;
   const adapter = join(member, "adapter", "step.c");
   const wrap = join(member, "adapter", "mca_wrap.c");
-  const versions = [checked(vfc, ["--version"]).stdout.trim(), checked(clang, ["--version"]).stdout.split("\n")[0]];
-  const key = digest([sha, hookDigest(), readFileSync(adapter, "utf8"), readFileSync(wrap, "utf8"), ...box3d, ...adapterFlags, ...versions].join("\n")).slice(0, 16);
+  const key = digest([stepOracleBuildKey(sha), stepToolchainIdentity(true)].join("\n")).slice(0, 16);
   const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
   const executable = join(cache, "step-builds", `${sha}-${key}-vfc`, "box3d-step-oracle");
-  if (existsSync(executable)) return executable;
+  if (existsSync(executable)) { stepExecutableIdentity(executable); return executable; }
   const { official, patched } = patchedStepSource(sha, cache);
   const build = join(cache, "step-builds", `${sha}-${key}-vfc-work`);
   rmSync(build, { recursive: true, force: true });
@@ -573,8 +624,10 @@ export function buildStepOracleVfc(sha: string): string {
   checked("bash", ["-c", script], build);
   verifyPristine(official, sha);
   mkdirSync(dirname(executable), { recursive: true });
+  assertStepImplementation();
   checked("cp", [join(build, "box3d-step-oracle"), executable]);
   rmSync(build, { recursive: true, force: true });
+  stepExecutableIdentity(executable);
   return executable;
 }
 
@@ -585,10 +638,10 @@ export function buildStepOracle(sha: string): string {
   const cmake = NATIVE_CMAKE;
   const cflags = NATIVE_CFLAGS;
   const adapter = join(member, "adapter", "step.c");
-  const key = digest([sha, hookDigest(), readFileSync(adapter, "utf8"), ...cmake, ...cflags].join("\n")).slice(0, 16);
+  const key = digest([stepOracleBuildKey(sha), stepToolchainIdentity(false)].join("\n")).slice(0, 16);
   const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
   const executable = join(cache, "step-builds", `${sha}-${key}`, "box3d-step-oracle");
-  if (existsSync(executable)) return executable;
+  if (existsSync(executable)) { stepExecutableIdentity(executable); return executable; }
   const { official, patched } = patchedStepSource(sha, cache);
   const build = join(cache, "step-builds", `${sha}-${key}-work`);
   rmSync(build, { recursive: true, force: true });
@@ -601,8 +654,10 @@ export function buildStepOracle(sha: string): string {
   checked(compiler(), [object, join(build, "src", "libbox3d.a"), "-lm", "-o", staged]);
   verifyPristine(official, sha);
   mkdirSync(dirname(executable), { recursive: true });
+  assertStepImplementation();
   checked("cp", [staged, executable]);
   rmSync(build, { recursive: true, force: true });
+  stepExecutableIdentity(executable);
   return executable;
 }
 

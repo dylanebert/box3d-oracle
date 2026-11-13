@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { join } from "node:path";
-import { buildStepOracle, buildStepOracleVfc, codeText, stepOracleBuildKey } from "./oracle";
+import { assertStepImplementation, buildStepOracle, buildStepOracleVfc, stepExecutableIdentity, stepSourceIdentity, stepToolchainIdentity } from "./oracle";
 import { ANDERSON_DARLING_05, andersonDarling, chiSquareQuantile, normalQuantile, roundedNormal } from "./stats";
 
 export type Vec3 = [number, number, number];
@@ -624,12 +624,12 @@ export function resetStepProfile() {
   for (const key of Object.keys(stepProfile) as (keyof typeof stepProfile)[]) stepProfile[key] = 0;
 }
 
-/** What an oracle's results depend on beyond a request, on any host: the lanes' builds
- * (stepOracleBuildKey), the rounding, the scene, and the bound and statistic code (this file and
- * stats.ts, comments aside); no path, compiler version or host. Runs are seeded from it. */
+/** The process's captured source behavior, actual executables and toolchain/backend contents. */
 export function oracleIdentity(sha: string, scene: StepScene, rounding: Rounding): string {
-  const code = (name: string) => codeText(readFileSync(join(import.meta.dir, name), "utf8"));
-  return createHash("sha256").update([stepOracleBuildKey(sha), JSON.stringify(rounding), MCA_BACKEND, encodeScene(scene), code("step.ts"), code("stats.ts")].join("\n")).digest("hex");
+  assertStepImplementation();
+  const builds = [stepToolchainIdentity(false), stepExecutableIdentity(buildStepOracle(sha))];
+  if (process.env.VERIFICARLO_PREFIX) builds.push(stepToolchainIdentity(true), stepExecutableIdentity(buildStepOracleVfc(sha)));
+  return createHash("sha256").update([stepSourceIdentity, ...builds, JSON.stringify(rounding), MCA_BACKEND, encodeScene(scene)].join("\n")).digest("hex");
 }
 
 /** Which of the randomly rounded lanes' arithmetic and sqrtf round randomly; a test may round either
@@ -647,6 +647,7 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
   const identity = oracleIdentity(sha, scene, rounding);
   const spreads = options.cache ?? "";
   const start = async (argv: string[], env?: Record<string, string | undefined>) => {
+    assertStepImplementation();
     const child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "inherit", env });
     const reader = child.stdout.getReader();
     const decoder = new TextDecoder();
@@ -674,13 +675,15 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
     child.stdin.write(encodeScene(scene));
     child.stdin.flush();
     const ready = await until("ready");
+    assertStepImplementation();
     // Pipelined: a request is written at once, so a lane never waits on its client to read its last
     // answer before it can start the next; answers are read in request order.
     let reads: Promise<unknown> = Promise.resolve();
     const exchange = <T>(request: string, read: () => Promise<T>): Promise<T> => {
+      if (argv[0] === executable) assertStepImplementation();
       child.stdin.write(request);
       child.stdin.flush();
-      const run = reads.then(read);
+      const run = reads.then(read).then((value) => { if (argv[0] === executable) assertStepImplementation(); return value; });
       reads = run.catch(() => undefined);
       return run;
     };
@@ -708,7 +711,8 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
   const startLane = () => {
     const prefix = process.env.VERIFICARLO_PREFIX;
     if (!prefix) throw new Error("randomly rounded runs need a native Verificarlo: VERIFICARLO_PREFIX names none");
-    const backend = rounding.arithmetic === "random" ? MCA_BACKEND : "libinterflop_mca.so --mode=ieee";
+    assertStepImplementation();
+    const backend = `${join(prefix, "lib", "libinterflop_mca.so")} ${rounding.arithmetic === "random" ? MCA_BACKEND.split(" ").slice(1).join(" ") : "--mode=ieee"}`;
     const vars: Record<string, string> = { VFC_BACKENDS: `${backend} --seed=0`, B3_ORACLE_SQRT: rounding.sqrt === "random" ? "random:0" : "nearest", VFC_BACKENDS_SILENT_LOAD: "True", VFC_BACKENDS_LOGGER: "False" };
     return start([buildStepOracleVfc(sha)], { ...process.env, ...vars, LD_LIBRARY_PATH: join(prefix, "lib") });
   };
@@ -729,11 +733,14 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
   const run = (s: StepState, lane = main) => send(encodeState(scene, s), lane);
   const seeded = (seed: string, request: string) => `seeded ${seed}\n${request}`;
   const seededRuns = async (state: StepState, purpose: string, count: number) => {
+    assertStepImplementation();
     const all = await lanes();
     const encoding = performance.now();
     const request = encodeState(scene, state);
     stepProfile.encode += performance.now() - encoding;
-    return Promise.all(Array.from({ length: count }, (_, r) => send(seeded(runSeed(identity, request, purpose, r), request), all[r % laneCount])));
+    const results = await Promise.all(Array.from({ length: count }, (_, r) => send(seeded(runSeed(identity, request, purpose, r), request), all[r % laneCount])));
+    assertStepImplementation();
+    return results;
   };
   const randomlyRounded = (state: StepState) => seededRuns(state, "bound", MCA_RUNS);
   const spreadOf = async (state: StepState, k: number): Promise<Spread> => {
@@ -771,13 +778,16 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
     randomlyRounded,
     independentRuns: (state, count, purpose = "null") => seededRuns(state, purpose, count),
     async sqrtf(x) {
+      assertStepImplementation();
       const request = `sqrtf ${f(x)}\n`;
       const ask = (lane: typeof main, text: string) => lane.exchange(text, async () => unf((await lane.until("end"))[0].split(" ")[1]));
       const all = await lanes();
       const [nearest, ...runs] = await Promise.all([ask(main, request), ...Array.from({ length: MCA_RUNS }, (_, r) => ask(all[r % laneCount], seeded(runSeed(identity, request, "sqrtf", r), request)))]);
+      assertStepImplementation();
       return { nearest, runs };
     },
     async stepWithSpread(state, k) {
+      assertStepImplementation();
       if (!options.cache) return spreadOf(state, k);
       const path = join(spreads, `${spreadKey(identity, k, scene, state)}.json`);
       if (existsSync(path)) return parseSpread(readFileSync(path, "utf8"));
@@ -790,7 +800,7 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
       }
       return spread;
     },
-    identity,
+    get identity() { assertStepImplementation(); return identity; },
     decide: (kind, operands, flip = false) =>
       exchange(`decide ${kind} ${kind === "separation" || kind === "rolling" ? vec(operands) : `${operands[0]} ${vec(operands.slice(1))}`} ${flip ? 1 : 0}\n`, async () => {
         const lines = await until("end");
