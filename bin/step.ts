@@ -1,7 +1,8 @@
 // Client for the step lane (adapter/step.c): a scene once, then one b3World_Step per request from a
 // complete loaded state. Numbers cross as float32 bits; an omitted optional field is upstream's default.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { atomicWrite } from "./atomic";
 import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import { assertStepImplementation, buildStepOracle, buildStepOracleVfc, stepExecutableIdentity, stepSourceIdentity, stepToolchainIdentity } from "./oracle";
@@ -794,9 +795,8 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
       const spread = await spreadOf(state, k);
       const text = serializeSpread(spread);
       if (text !== undefined) {
-        mkdirSync(spreads, { recursive: true });
-        writeFileSync(`${path}.tmp`, text);
-        renameSync(`${path}.tmp`, path);
+        assertStepImplementation();
+        atomicWrite(path, text);
       }
       return spread;
     },

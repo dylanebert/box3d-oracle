@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
 import { Snapshot } from "./snapshot";
+import { publishBuild } from "./atomic";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -475,13 +476,13 @@ export function oracleCacheDirectory(): string {
 }
 
 /** The official checkout at `sha` and its disposable copy with every step-lane hook applied. */
-function patchedStepSource(sha: string, cache: string): { official: string; patched: string } {
-  const remote = join(cache, "official.git");
+function patchedStepSource(sha: string, cache: string, work: string): { official: string; patched: string } {
+  const remote = join(work, "official.git");
+  if (existsSync(join(cache, "official.git", "HEAD"))) checked("git", ["clone", "--quiet", "--bare", join(cache, "official.git"), remote]);
   verifyReachable(OFFICIAL_SOURCE_URL, sha, remote);
   const official = materializePristine(remote, sha);
   verifyPristine(official, sha);
-  const patched = join(cache, "checkouts", `${sha}-step-patched`);
-  rmSync(patched, { recursive: true, force: true });
+  const patched = join(work, "patched");
   const { applied } = patchOfficialSource(official, patched);
   const missing = PATCHES.filter((patch) => patch.optional && !applied.includes(patch.marker)).map((patch) => patch.marker);
   if (missing.length) throw new OracleError(`step lane hooks have no site at ${sha}: ${missing.join(", ")}`);
@@ -524,7 +525,7 @@ const NATIVE_CMAKE = ["-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "
 const NATIVE_CFLAGS = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-DNDEBUG"];
 
 const implementation = new Snapshot();
-const sourceNames = ["bin/oracle.ts", "bin/step.ts", "bin/stats.ts", "bin/snapshot.ts", "hooks/patches.ts", "hooks/oracle_hooks.h", "adapter/step.c", "adapter/mca_wrap.c"];
+const sourceNames = ["bin/oracle.ts", "bin/step.ts", "bin/stats.ts", "bin/snapshot.ts", "bin/atomic.ts", "hooks/patches.ts", "hooks/oracle_hooks.h", "adapter/step.c", "adapter/mca_wrap.c"];
 const sourceHashes = sourceNames.map((name) => implementation.file(join(import.meta.dir, "..", name), codeText));
 export const stepSourceIdentity = digest(sourceHashes.join("\n"));
 export const assertStepImplementation = () => {
@@ -579,7 +580,7 @@ export function stepExecutableIdentity(path: string): string {
 export function stepOracleBuildKey(sha: string): string {
   requireFullSha(sha);
   assertStepImplementation();
-  return digest([sha, ...sourceHashes.slice(4), ...NATIVE_CMAKE, ...NATIVE_CFLAGS, ...VFC_BOX3D_FLAGS, ...VFC_ADAPTER_FLAGS].join("\n"));
+  return digest([sha, ...sourceHashes.slice(5), ...NATIVE_CMAKE, ...NATIVE_CFLAGS, ...VFC_BOX3D_FLAGS, ...VFC_ADAPTER_FLAGS].join("\n"));
 }
 
 /** The randomly rounded lane: the patched checkout compiled by a native Verificarlo (VERIFICARLO_PREFIX,
@@ -607,10 +608,10 @@ export function buildStepOracleVfc(sha: string): string {
   const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
   const executable = join(cache, "step-builds", `${sha}-${key}-vfc`, "box3d-step-oracle");
   if (existsSync(executable)) { stepExecutableIdentity(executable); return executable; }
-  const { official, patched } = patchedStepSource(sha, cache);
-  const build = join(cache, "step-builds", `${sha}-${key}-vfc-work`);
-  rmSync(build, { recursive: true, force: true });
-  mkdirSync(build, { recursive: true });
+  publishBuild(executable, (work) => {
+  const { official, patched } = patchedStepSource(sha, cache, work);
+  const build = join(work, "compile");
+  mkdirSync(build);
   const include = [`-I${join(patched, "include")}`, `-I${join(patched, "src")}`];
   const script = [
     "set -e",
@@ -623,10 +624,9 @@ export function buildStepOracleVfc(sha: string): string {
   ].join("\n");
   checked("bash", ["-c", script], build);
   verifyPristine(official, sha);
-  mkdirSync(dirname(executable), { recursive: true });
   assertStepImplementation();
-  checked("cp", [join(build, "box3d-step-oracle"), executable]);
-  rmSync(build, { recursive: true, force: true });
+  return join(build, "box3d-step-oracle");
+  });
   stepExecutableIdentity(executable);
   return executable;
 }
@@ -642,9 +642,9 @@ export function buildStepOracle(sha: string): string {
   const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
   const executable = join(cache, "step-builds", `${sha}-${key}`, "box3d-step-oracle");
   if (existsSync(executable)) { stepExecutableIdentity(executable); return executable; }
-  const { official, patched } = patchedStepSource(sha, cache);
-  const build = join(cache, "step-builds", `${sha}-${key}-work`);
-  rmSync(build, { recursive: true, force: true });
+  publishBuild(executable, (work) => {
+  const { official, patched } = patchedStepSource(sha, cache, work);
+  const build = join(work, "compile");
   const generator = cmakeGenerator();
   checked("cmake", ["-S", patched, "-B", build, ...(generator ? ["-G", generator] : []), ...cmake]);
   checked("cmake", ["--build", build, "--target", "box3d"]);
@@ -653,10 +653,9 @@ export function buildStepOracle(sha: string): string {
   const staged = join(build, "box3d-step-oracle");
   checked(compiler(), [object, join(build, "src", "libbox3d.a"), "-lm", "-o", staged]);
   verifyPristine(official, sha);
-  mkdirSync(dirname(executable), { recursive: true });
   assertStepImplementation();
-  checked("cp", [staged, executable]);
-  rmSync(build, { recursive: true, force: true });
+  return staged;
+  });
   stepExecutableIdentity(executable);
   return executable;
 }
