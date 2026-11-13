@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { atomicWrite } from "./atomic";
 import { availableParallelism } from "node:os";
 import { join } from "node:path";
-import { assertStepImplementation, buildStepOracle, buildStepOracleVfc, stepExecutableIdentity, stepSourceIdentity, stepToolchainIdentity } from "./oracle";
+import { assertStepImplementation, buildStepOracle, buildStepOracleVfc, stepExecutableIdentity, stepLaneEnvironment, stepSourceIdentity, stepToolchainIdentity } from "./oracle";
 import { ANDERSON_DARLING_05, andersonDarling, chiSquareQuantile, normalQuantile, roundedNormal } from "./stats";
 
 export type Vec3 = [number, number, number];
@@ -629,7 +629,7 @@ export function resetStepProfile() {
 export function oracleIdentity(sha: string, scene: StepScene, rounding: Rounding): string {
   assertStepImplementation();
   const builds = [stepToolchainIdentity(false), stepExecutableIdentity(buildStepOracle(sha))];
-  if (process.env.VERIFICARLO_PREFIX) builds.push(stepToolchainIdentity(true), stepExecutableIdentity(buildStepOracleVfc(sha)));
+  if (process.env.VERIFICARLO_PREFIX) builds.push(stepToolchainIdentity(true), stepExecutableIdentity(buildStepOracleVfc(sha), true));
   return createHash("sha256").update([stepSourceIdentity, ...builds, JSON.stringify(rounding), MCA_BACKEND, encodeScene(scene)].join("\n")).digest("hex");
 }
 
@@ -647,7 +647,7 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
   // the code that bounds the runs.
   const identity = oracleIdentity(sha, scene, rounding);
   const spreads = options.cache ?? "";
-  const start = async (argv: string[], env?: Record<string, string | undefined>) => {
+  const start = async (argv: string[], env: Record<string, string> = { ...stepLaneEnvironment() }) => {
     assertStepImplementation();
     const child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "inherit", env });
     const reader = child.stdout.getReader();
@@ -715,7 +715,7 @@ export async function openStepOracle(sha: string, scene: StepScene, rounding: Ro
     assertStepImplementation();
     const backend = `${join(prefix, "lib", "libinterflop_mca.so")} ${rounding.arithmetic === "random" ? MCA_BACKEND.split(" ").slice(1).join(" ") : "--mode=ieee"}`;
     const vars: Record<string, string> = { VFC_BACKENDS: `${backend} --seed=0`, B3_ORACLE_SQRT: rounding.sqrt === "random" ? "random:0" : "nearest", VFC_BACKENDS_SILENT_LOAD: "True", VFC_BACKENDS_LOGGER: "False" };
-    return start([buildStepOracleVfc(sha)], { ...process.env, ...vars, LD_LIBRARY_PATH: join(prefix, "lib") });
+    return start([buildStepOracleVfc(sha)], { ...stepLaneEnvironment(), ...vars, LD_LIBRARY_PATH: join(prefix, "lib") });
   };
   const lanes = async () => (stochastic ??= await Promise.all(Array.from({ length: laneCount }, () => startLane())));
   const send = (request: string, lane = main) =>

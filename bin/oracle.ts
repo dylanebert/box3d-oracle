@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
 import { Snapshot } from "./snapshot";
+import { runtimeSnapshot } from "./runtime";
 import { publishBuild } from "./atomic";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -525,10 +526,28 @@ const NATIVE_CMAKE = ["-DCMAKE_BUILD_TYPE=Release", "-DBOX3D_DISABLE_SIMD=ON", "
 const NATIVE_CFLAGS = ["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off", "-DB3_ORACLE_HOOKS", "-DB3_ORACLE_STEP_HOOKS", "-DNDEBUG"];
 
 const implementation = new Snapshot();
-const sourceNames = ["bin/oracle.ts", "bin/step.ts", "bin/stats.ts", "bin/snapshot.ts", "bin/atomic.ts", "hooks/patches.ts", "hooks/oracle_hooks.h", "adapter/step.c", "adapter/mca_wrap.c"];
+const sourceNames = ["bin/oracle.ts", "bin/step.ts", "bin/stats.ts", "bin/snapshot.ts", "bin/atomic.ts", "hooks/patches.ts", "hooks/oracle_hooks.h", "adapter/step.c", "adapter/mca_wrap.c", "bin/runtime.ts"];
 const sourceHashes = sourceNames.map((name) => implementation.file(join(import.meta.dir, "..", name), codeText));
 export const stepSourceIdentity = digest(sourceHashes.join("\n"));
+const runtimeIdentity = runtimeSnapshot(implementation);
+function refuseLoaderControls(): void {
+  for (const name of Object.keys(process.env)) {
+    if (/^(LD_|DYLD_)/.test(name) || ["GLIBC_TUNABLES", "LIBPATH", "SHLIB_PATH"].includes(name)) {
+      throw new OracleError(`oracle loader control refused: ${name}`);
+    }
+  }
+}
+let laneEnvironment: Readonly<Record<string, string>> | undefined;
+export function stepLaneEnvironment(): Readonly<Record<string, string>> {
+  assertStepImplementation();
+  if (!laneEnvironment) {
+    const profile = frozenEnv("B3_ORACLE_PROFILE");
+    laneEnvironment = Object.freeze({ LANG: "C", LC_ALL: "C", TZ: "UTC", ...(profile === undefined ? {} : { B3_ORACLE_PROFILE: profile }) });
+  }
+  return laneEnvironment;
+}
 export const assertStepImplementation = () => {
+  refuseLoaderControls();
   implementation.assert();
   for (const [name, value] of environment) if (process.env[name] !== value) throw new OracleError(`oracle implementation changed: ${name}; restart the process`);
 };
@@ -564,16 +583,20 @@ export function stepToolchainIdentity(vfc: boolean): string {
       }
       return digest(files.map((file) => implementation.file(file)).join("\n"));
     });
-    if (vfc) contents.push(implementation.tree(join(prefix!, "bin")), implementation.tree(join(prefix!, "lib")));
+    if (vfc) {
+      contents.push(implementation.tree(join(prefix!, "bin")), implementation.tree(join(prefix!, "lib")));
+      contents.push(runtimeIdentity(join(prefix!, "lib", "libinterflop_mca.so"), { ...stepLaneEnvironment(), LD_LIBRARY_PATH: join(prefix!, "lib") }));
+    }
     identity = digest(contents.join("\n"));
     toolchains.set(key, identity);
   }
   assertStepImplementation();
   return identity;
 }
-export function stepExecutableIdentity(path: string): string {
+export function stepExecutableIdentity(path: string, stochastic = false): string {
   assertStepImplementation();
-  return implementation.file(path);
+  const env = { ...stepLaneEnvironment(), ...(stochastic ? { LD_LIBRARY_PATH: join(frozenEnv("VERIFICARLO_PREFIX")!, "lib") } : {}) };
+  return runtimeIdentity(path, env);
 }
 
 /** Source behavior and build flags. Executed file contents and toolchains are bound separately. */
@@ -607,7 +630,7 @@ export function buildStepOracleVfc(sha: string): string {
   const key = digest([stepOracleBuildKey(sha), stepToolchainIdentity(true)].join("\n")).slice(0, 16);
   const cache = resolve(process.env.BOX3D_ORACLE_CACHE ?? join(tmpdir(), "box3d-oracle-cache"));
   const executable = join(cache, "step-builds", `${sha}-${key}-vfc`, "box3d-step-oracle");
-  if (existsSync(executable)) { stepExecutableIdentity(executable); return executable; }
+  if (existsSync(executable)) { stepExecutableIdentity(executable, true); return executable; }
   publishBuild(executable, (work) => {
   const { official, patched } = patchedStepSource(sha, cache, work);
   const build = join(work, "compile");
@@ -627,7 +650,7 @@ export function buildStepOracleVfc(sha: string): string {
   assertStepImplementation();
   return join(build, "box3d-step-oracle");
   });
-  stepExecutableIdentity(executable);
+  stepExecutableIdentity(executable, true);
   return executable;
 }
 
