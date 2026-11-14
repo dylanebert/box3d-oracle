@@ -202,7 +202,8 @@ export function materializePristine(cache: string, sha: string): string {
   const root = join(cache, "checkouts", sha);
   rmSync(root, { recursive: true, force: true });
   mkdirSync(dirname(root), { recursive: true });
-  checked("git", ["clone", "--quiet", "--no-checkout", cache, root]);
+  checked("git", ["init", "--quiet", root]);
+  checked("git", ["fetch", "--quiet", "--no-tags", cache, sha], root);
   checked("git", ["checkout", "--quiet", "--detach", sha], root);
   return root;
 }
@@ -479,7 +480,9 @@ export function oracleCacheDirectory(): string {
 /** The official checkout at `sha` and its disposable copy with every step-lane hook applied. */
 function patchedStepSource(sha: string, cache: string, work: string): { official: string; patched: string } {
   const remote = join(work, "official.git");
-  if (existsSync(join(cache, "official.git", "HEAD"))) checked("git", ["clone", "--quiet", "--bare", join(cache, "official.git"), remote]);
+  // Object transport ignores transient pack files; local hardlink/copy traversal
+  // races fetch/maintenance. Mirror keeps official's remote-tracking refs too.
+  if (existsSync(join(cache, "official.git", "HEAD"))) checked("git", ["clone", "--no-local", "--quiet", "--mirror", join(cache, "official.git"), remote]);
   verifyReachable(OFFICIAL_SOURCE_URL, sha, remote);
   const official = materializePristine(remote, sha);
   verifyPristine(official, sha);
@@ -1025,7 +1028,8 @@ function legacyScenarioSource(cache: string, sha: string): string {
   checked("git", ["fetch", "--no-tags", "legacy", `+${sha}:refs/remotes/legacy/migration`], remote);
   const checkout = join(cache, "legacy-checkouts", sha);
   rmSync(checkout, { recursive: true, force: true });
-  checked("git", ["clone", "--quiet", "--no-checkout", remote, checkout]);
+  checked("git", ["init", "--quiet", checkout]);
+  checked("git", ["fetch", "--quiet", "--no-tags", remote, sha], checkout);
   checked("git", ["checkout", "--quiet", "--detach", sha], checkout);
   const source = join(checkout, "fixtures", "gen.c");
   if (!existsSync(source)) throw new OracleError(`legacy source is missing fixtures/gen.c at ${sha}`);
