@@ -37,6 +37,8 @@ typedef struct Scene
 	int subStepCount;
 	int bodyCount, shapeCount, jointCount;
 	b3BodyDef bodies[MAX_ITEMS];
+	bool explicitMass[MAX_ITEMS];
+	b3MassData massData[MAX_ITEMS];
 	b3ShapeDef shapeDefs[MAX_ITEMS];
 	int shapeBody[MAX_ITEMS], shapeKind[MAX_ITEMS];
 	b3Capsule capsules[MAX_ITEMS];
@@ -184,6 +186,16 @@ static void readBody(int i)
 	optFloat(&d->gravityScale);
 	optBool(&d->allowFastRotation);
 	d->enableSleep = false;
+	scene.explicitMass[i] = readInt() != 0;
+	if (scene.explicitMass[i])
+	{
+		b3MassData* m = &scene.massData[i];
+		m->mass = readFloat();
+		m->center = readVec3();
+		float xx = readFloat(), xy = readFloat(), xz = readFloat();
+		float yy = readFloat(), yz = readFloat(), zz = readFloat();
+		m->inertia = (b3Matrix3){ {xx, xy, xz}, {xy, yy, yz}, {xz, yz, zz} };
+	}
 }
 
 // shape body kind geometry... density friction restitution rollingResistance groupIndex categoryBits maskBits
@@ -571,6 +583,8 @@ static b3WorldId buildWorld(void)
 		else if (scene.shapeKind[i] == SHAPE_SPHERE) b3CreateSphereShape(body, d, &scene.spheres[i]);
 		else b3CreateHullShape(body, d, &scene.boxes[i].base);
 	}
+	for (int i = 0; i < scene.bodyCount; ++i)
+		if (scene.explicitMass[i]) b3Body_SetMassData(bodyIds[i], scene.massData[i]);
 	for (int i = 0; i < scene.jointCount; ++i)
 	{
 		scene.base[i]->bodyIdA = bodyIds[scene.jointBodyA[i]];

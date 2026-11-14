@@ -77,6 +77,31 @@ test("a chain of loaded steps reproduces an uninterrupted upstream rollout bit f
   expect(native.some((r) => r.joints.some((j) => j.impulses.some((x) => x !== 0)))).toBe(true);
 }, 120_000);
 
+test("explicit mass, center and inertia reach upstream's step", async () => {
+  const massData = { mass: 2, center: [0.1, 0, 0] as [number, number, number], inertia: [0.2, 0.01, 0.02, 0.3, 0.03, 0.4] as [number, number, number, number, number, number] };
+  const make = (data: typeof massData): StepScene => ({
+    world: { gravity: [0, 0, 0], timeStep: 1 / 60, subStepCount: 4 },
+    bodies: [{ type: "dynamic", position: [0, 2, 0], rotation: [0, 0, 0, 1], massData: data }],
+    shapes: [{ body: 0, kind: "sphere", center: [0, 0, 0], radius: 0.2 }], joints: [],
+  });
+  const base = await openStepOracle(SHA, make(massData));
+  try {
+    const state = nextState(base.initial);
+    state.bodies[0].force = [1, 2, 3];
+    state.bodies[0].torque = [3, 2, 1];
+    const reference = await base.step(state);
+    for (const change of [
+      { ...massData, mass: 3 },
+      { ...massData, center: [0.2, 0.1, 0] as [number, number, number] },
+      { ...massData, inertia: [0.4, 0.02, 0.04, 0.6, 0.06, 0.8] as typeof massData.inertia },
+    ]) {
+      const changed = await openStepOracle(SHA, make(change));
+      try { expect((await changed.step(state)).bodies).not.toEqual(reference.bodies); }
+      finally { changed.close(); }
+    }
+  } finally { base.close(); }
+});
+
 // Sentinel: every loaded field reaches the step. Each mutation of the state round trip must change
 // what upstream computes from it, not only the echo of the mutated field.
 test("each loaded field changes the step it feeds", async () => {

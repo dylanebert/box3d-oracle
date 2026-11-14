@@ -36,6 +36,8 @@ export interface StepBodyDef {
   angularDamping?: number;
   gravityScale?: number;
   allowFastRotation?: boolean;
+  /** Explicit local mass properties, applied after shapes through b3Body_SetMassData. */
+  massData?: { mass: number; center: Vec3; /** Symmetric inertia about center: xx, xy, xz, yy, yz, zz. */ inertia: [number, number, number, number, number, number] };
 }
 export type StepShapeDef = {
   body: number;
@@ -188,7 +190,7 @@ export function encodeScene(scene: StepScene): string {
     `scene ${scene.bodies.length} ${scene.shapes.length} ${scene.joints.length}`,
     `world ${vec(w.gravity)} ${opt(w.restitutionThreshold)} ${optInt(w.restitutionIterations)} ${opt(w.contactHertz)} ${opt(w.contactDampingRatio)} ${opt(w.contactSpeed)} ${opt(w.maximumLinearSpeed)} ${opt(w.isotropicInertiaTolerance)} ${optU64(w.maxFrictionMaterial)} ${f(w.timeStep)} ${w.subStepCount}`,
   ];
-  for (const b of scene.bodies) lines.push(`body ${BODY_TYPES[b.type]} ${vec(b.position)} ${vec(b.rotation)} ${opt(b.linearDamping)} ${opt(b.angularDamping)} ${opt(b.gravityScale)} ${optBool(b.allowFastRotation)}`);
+  for (const b of scene.bodies) lines.push(`body ${BODY_TYPES[b.type]} ${vec(b.position)} ${vec(b.rotation)} ${opt(b.linearDamping)} ${opt(b.angularDamping)} ${opt(b.gravityScale)} ${optBool(b.allowFastRotation)} ${b.massData ? `1 ${f(b.massData.mass)} ${vec(b.massData.center)} ${vec(b.massData.inertia)}` : "0"}`);
   for (const s of scene.shapes) {
     const geometry = s.kind === "capsule" ? `${vec(s.center1)} ${vec(s.center2)} ${f(s.radius)}` : s.kind === "sphere" ? `${vec(s.center)} ${f(s.radius)}` : vec(s.halfExtents);
     lines.push(`shape ${s.body} ${SHAPE_KINDS[s.kind]} ${geometry} ${opt(s.density)} ${opt(s.friction)} ${opt(s.restitution)} ${opt(s.rollingResistance)} ${optInt(s.groupIndex)} ${optU64(s.categoryBits)} ${optU64(s.maskBits)} ${optU64(s.userMaterialId)}`);
