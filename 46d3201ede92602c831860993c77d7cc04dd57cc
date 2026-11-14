@@ -1,0 +1,2 @@
+stage: 6
+finding: Stage Check remains red at test/publication.test.ts:20: two sandbox suites fail concurrent cold publication with git hardlink different from source (38.491/37.212 s). Read-only sandbox log inspection confirms this; no same-host main 6413790 red was available to establish the claimed existing failure. Mac main publication passes and candidate Mac suite passes 41 with 8 skips. No mass-data adapter defect found, but the sandbox failure cannot be waived as existing without main evidence.
